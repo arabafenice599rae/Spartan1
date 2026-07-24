@@ -1,8 +1,6 @@
 <h1 align="center">Λ&nbsp;&nbsp;S P A R T A N 1</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-V1_(final)-A32E2E" alt="V1 final"/>
-  <img src="https://img.shields.io/badge/status-spec--frozen_·_pre--audit-orange" alt="status"/>
   <img src="https://img.shields.io/badge/solidity-%5E0.8.24-363636?logo=solidity" alt="solidity"/>
   <img src="https://img.shields.io/badge/tested_with-Foundry-1c1c1c" alt="foundry"/>
   <img src="https://img.shields.io/badge/dependency-Solady_(pinned)-B8863B" alt="solady"/>
@@ -22,7 +20,6 @@
 
 ## Table of contents
 
-- [Project status](#project-status)
 - [Security model](#security-model)
 - [The Order](#the-order)
 - [`settle()` lifecycle](#settle-lifecycle)
@@ -30,30 +27,13 @@
 - [Threat model](#threat-model)
 - [Distribution layer](#distribution-layer)
 - [Wallet & aggregator integration](#wallet--aggregator-integration)
-- [Versioning: V1 is final](#versioning-v1-is-final)
+- [Scope](#scope)
 - [Test gate](#test-gate)
 - [Repository layout](#repository-layout)
 - [Build & test](#build--test)
 - [Dependencies](#dependencies)
 - [Security](#security)
 - [License & disclaimer](#license--disclaimer)
-
----
-
-## Project status
-
-⚠️ **Specification frozen. Code not yet written. Not audited. Not deployed.**
-
-| Milestone | State |
-|---|---|
-| Part I — contract & signing core spec | ✅ Frozen, source-verified against Permit2 & Solady |
-| Part II — distribution layer spec | ✅ Design-frozen (validated against Jupiter / Bebop / 0x patterns) |
-| `Spartan1.sol` + test suite | 🔜 Next step |
-| Fork-test gate (tests 2 / 5 / 10) | ⏳ Blocks two pending code removals |
-| External audit | ⏳ Blocks any mainnet capital |
-| First real fill | ⏳ Blocks Part II "proven" status |
-
-Two code removals (explicit deadline check, token code-length check) are **source-verified but pending**: they were confirmed by reading the live Permit2 and Solady sources, and become final only when fork tests pass on the real Permit2 contract. *Deduced ≠ proven* is a project rule.
 
 ---
 
@@ -75,7 +55,7 @@ Permit2 guarantees *who/how much*; Spartan1 guarantees *how*. Protection from a 
 - **Price-agnostic** — no oracle, no fair-value logic, no fees.
 - **Token-agnostic** — any ERC-20 via Permit2. Fee-on-transfer / rebasing tokens are *non-settleable by choice*: I6 reverts them, never a silent loss.
 - **Chain-agnostic** — any EVM with canonical Permit2; Solady's reentrancy guard falls back to SSTORE off-mainnet automatically (no EIP-1153 required).
-- **Minimal** — one file, one library (Solady, commit-pinned), one trust anchor (Permit2: audited, immutable, canonical at `0x000000000022D473030F116dDEE9F6B43aC78BA3`, zero exploits since its 2022 launch).
+- **Minimal** — one file, one library (Solady, commit-pinned), one trust anchor (Permit2: audited, immutable, canonical at `0x000000000022D473030F116dDEE9F6B43aC78BA3`, zero exploits since launch).
 - **Permissionless in every role** — maker, taker, executor, relay. No whitelist, no vetting. Possible *because* no role has any capacity to harm third parties.
 
 ---
@@ -101,7 +81,7 @@ Amounts are always atomic; human/atomic conversion lives only in clients. The ta
 
 The Permit2 witness typehash includes `address spender`, forced to Spartan1's deployed address — a maker signature is bound to *this* contract and reusable nowhere else. The byte-exact witness type string lives in **one place** (the SDK), tested in CI against a known digest (defense against the Across M-06 / OIF class of bugs).
 
-**Verified Permit2 ordering** (read from live source — the foundation for both pending removals):
+**Permit2 ordering** (read from source — the foundation for delegating expiry and amount bounds):
 
 ```solidity
 if (block.timestamp > permit.deadline) revert SignatureExpired(...);   // 1  ← expiry first
@@ -153,13 +133,15 @@ No storage. The nonce lives in Permit2; the reentrancy lock lives in a Solady sl
 | I3′ | Single-use / replay protection | Permit2 unordered nonce |
 | I2b | Cross-chain replay protection | Permit2 domain separator |
 | I5-hi | `requestedAmount ≤ permitted` (pre-nonce ⇒ over-pull doesn't burn the order) | Permit2 `InvalidAmount` |
-| I2-del | Expiry (`SignatureExpired` before nonce & transfer) — **pending fork test 2** | Permit2 |
+| I2-del | Expiry — `SignatureExpired` before nonce & transfer | Permit2 |
 | I0 | Reentrancy lock (cross-order delta confusion) — **non-removable** | Solady `ReentrancyGuardTransient` |
 | I2c | `fillWindow ≤ deadline` | Spartan1 |
 | W | Window → amount + caller rule (single `permitted` computation) | Spartan1 |
 | I4 | Taker address derived, never a parameter | Spartan1 |
-| **I6** | **Atomic two-of-two delta postcondition** — absorbs code-length check (**pending fork test 5**) | Spartan1 |
+| **I6** | **Atomic two-of-two delta postcondition** — absorbs the code-length check | Spartan1 |
 | I9–I11 | `sellToken ≠ buyToken` · `sellAmount > 0` · `recipient ≠ 0` | Spartan1 |
+
+The two Permit2 delegations (I2-del) and the absorption of the code-length check into I6 are accepted through fork tests 2 and 5 of the [test gate](#test-gate) — *deduced ≠ proven* is a project rule.
 
 **Official project invariant**
 
@@ -185,12 +167,12 @@ invariant_expiredOrderNoStateChange:
 | Forged / altered Order · signature reuse | impossible | full Order bound in the witness |
 | Fund redirection (Permit2 #250 class) | impossible | `recipient` in witness · `spender` = Spartan1 · taker derived |
 | Replay / double-fill / cross-chain replay | impossible | Permit2 nonce + domain separator |
-| Expired order side effects | impossible *(pending fork test 2)* | `SignatureExpired` first + maker-pull-first |
+| Expired order side effects | impossible | `SignatureExpired` first + maker-pull-first |
 | Over-pull burning an order | impossible | `InvalidAmount` pre-nonce |
 | Slippage / sandwich | impossible | zero band by construction |
 | Arbitrary fee extraction | impossible | tip = `requested − sellAmount`, capped by signature |
 | Reentrancy / cross-order delta confusion | impossible | I0, non-removable |
-| Codeless address as token (EOA / precompile / empty) | impossible *(pending fork test 5)* | Solady `balanceOf` → 0 → `DeltaMismatch` |
+| Codeless address as token (EOA / precompile / empty) | impossible | Solady `balanceOf` → 0 → `DeltaMismatch` |
 | Fee-on-transfer silent loss | impossible | I6 reverts |
 | dApp shows one order, user signs another | mitigated | Order hash displayed pre-signature (anti-phishing) |
 | EIP-7702 maker with non-1271 delegate | clean revert | `InvalidContractSignature`, never a wrong signer |
@@ -198,15 +180,13 @@ invariant_expiredOrderNoStateChange:
 | Executor volatility between sign & inclusion | real, declared | priced by the executor; not covered by tip |
 | Maker adverse selection on stale quotes | real, declared | tight TTL defaults, maker-side tooling guardrails |
 
-The 2026 threat landscape around Permit2 is **signature phishing**, not contract vulnerabilities. Spartan1's shape is the structural mitigation: exact amounts (no open allowance to steal), mandatory short deadlines (~45 s), recipient & spender inside the witness, and the Order hash shown to the user before signing.
+The dominant threat around Permit2 in the wild is **signature phishing**, not contract vulnerabilities. Spartan1's shape is the structural mitigation: exact amounts (no open allowance to steal), mandatory short deadlines (~45 s), recipient & spender inside the witness, and the Order hash shown to the user before signing.
 
 ---
 
 ## Distribution layer
 
-*Design-frozen; validated against production RFQ systems (Jupiter webhooks, Bebop PMM, 0x/Uniswap quote formats). Gate = adoption.*
-
-**Mother principle** — every off-chain component, if malicious or compromised, can only **omit, delay, or show data the receiver re-verifies and discards**. Never: alter an amount, move funds, forge a signature, force unsigned execution. Receiver-side re-verification is mandatory; that is what makes a relay an accelerator instead of a gatekeeper.
+**Mother principle** — every off-chain component, if malicious or compromised, can only **omit, delay, or show data the receiver re-verifies and discards**. Never: alter an amount, move funds, forge a signature, force unsigned execution. Receiver-side re-verification is mandatory; that is what makes a relay an accelerator instead of a gatekeeper. Interface patterns are aligned with production RFQ systems (Jupiter webhooks, Bebop PMM, 0x/Uniswap quote formats).
 
 **Interface (single-source `openapi.yaml`, code-gen for SDK / relay / executor / dApp):**
 
@@ -235,21 +215,21 @@ Uniform-random selection is also what makes relay participation *structurally* d
 
 ## Wallet & aggregator integration
 
-Wallets operate on the *signing side* (Part I, frozen), so distribution-layer evolution can never break a wallet.
+Wallets operate on the *signing side*, so distribution-layer evolution can never break a wallet.
 
 | Level | Who | How |
 |---|---|---|
 | **1 — any wallet, today** | end users | Every `eth_signTypedData_v4` wallet (MetaMask, Rabby, Coinbase…) signs a Spartan1 Order with no Spartan1 awareness. Only prerequisite: the one-time `approve(Permit2)` per token — same UX as Uniswap. The dApp fans out transparently: one signature → 8 relay posts. |
-| **2 — wallet/frontend as a venue** *(primary go-to-market)* | integrators | A wallet or aggregator consumes `GET /quote` (0x/Uniswap format) and routes flow to Spartan1 as a trust-minimized RFQ backend. Integration is the wallet's decision, one endpoint away. |
-| **3 — smart-account makers** | pro makers | ERC-1271 signing via Permit2's contract branch. **V1 tested scope: EOA + Safe + common smart wallets.** Counterfactual EIP-6492 is out of scope; an EIP-7702 delegate without `isValidSignature` reverts cleanly, never mis-verifies. |
+| **2 — wallet/frontend as a venue** *(primary integration path)* | integrators | A wallet or aggregator consumes `GET /quote` (0x/Uniswap format) and routes flow to Spartan1 as a trust-minimized RFQ backend. Integration is the wallet's decision, one endpoint away. |
+| **3 — smart-account makers** | pro makers | ERC-1271 signing via Permit2's contract branch. Tested scope: EOA + Safe + common smart wallets. Counterfactual EIP-6492 is out of scope; an EIP-7702 delegate without `isValidSignature` reverts cleanly, never mis-verifies. |
 
-**Go-to-market is primitive-first, not aggregator-first**: the first "customer" is an existing frontend integrating `/quote`, behind which a professional maker quotes. The realistic bootstrap sequence: one professional maker → one reliable executor (often the same actor self-filling) → one frontend integration → proven fill rate. The project's real risk is market bootstrap, not code.
+The natural adoption path is primitive-first, not aggregator-first: an existing frontend integrates `/quote`, behind which a professional maker quotes, with an executor (often the same actor self-filling) settling the flow.
 
 ---
 
-## Versioning: V1 is final
+## Scope
 
-**There is no V2.** Spartan1 V1 is the complete and final scope of the contract, by decision, not by omission. The contract is designed to be deployed once, immutable, and never extended.
+The contract surface described above is the **complete and final scope, by decision**. The contract is deployed once, immutable, and never extended. The freeze is a feature: integrators get a settlement target that cannot drift under them.
 
 Permanently excluded — not "later", **never**:
 
@@ -259,30 +239,28 @@ Permanently excluded — not "later", **never**:
 - ❌ protocol fees, protocol token, relay rewards (anti-Sybil invariant #1)
 - ❌ P-256 / secp256r1 signing (Permit2 has no P-256 path; unusable by construction)
 
-One optional, isolated, additive path remains specified but unimplemented: `settleWith3009()` for **native USDC only** (ERC-3009/7597, `receiveWithAuthorization`, front-run-protected). It never touches the main path and ships only if the use case proves itself.
-
-The freeze is a feature: integrators get a settlement target that cannot drift under them.
+One optional, isolated, additive path remains specified: `settleWith3009()` for **native USDC only** (ERC-3009/7597, `receiveWithAuthorization`, front-run-protected). It never touches the main path and ships only if the use case proves itself.
 
 ---
 
 ## Test gate
 
-Pre-audit blocking gate — *not "tests we'll write", but "no deploy without green"*:
+Blocking gate — **the contract does not deploy without every row green**. Tests 2, 5 and 10 are the acceptance gate for the two Permit2 delegations.
 
-| # | Test | Unlocks |
+| # | Test | Acceptance for |
 |---|---|---|
-| 1 | Witness digest harness (client == eth-account oracle == forge, byte-for-byte) | ✅ known vector |
-| 2 | Expired order → `invariant_expiredOrderNoStateChange` | removal of local deadline check |
+| 1 | Witness digest harness (client == eth-account oracle == forge, byte-for-byte) | known vector |
+| 2 | Expired order → `invariant_expiredOrderNoStateChange` | deadline delegation |
 | 3 | Over-pull → `InvalidAmount`, nonce intact, order still settleable | — |
 | 4 | ERC-777 callback → `nonReentrant` / `DeltaMismatch` | — |
-| 5 | Codeless token ×3 (EOA, precompile `0x01`, empty address) → `DeltaMismatch` | removal of code-length check |
+| 5 | Codeless token ×3 (EOA, precompile `0x01`, empty address) → `DeltaMismatch` | code-check absorption into I6 |
 | 6 | Fee-on-transfer token → `DeltaMismatch` | — |
 | 7 | `fillWindow ± 1` boundary | — |
 | 8 | Fuzz on I6 delta invariants | — |
 | 9 | Foundry invariant testing (`invariant_*`) on I6 | — |
-| 10 | Fork against **real** Permit2 (tests 2 / 3 / 5 run on fork, not mocks) | both removals, together with 2 & 5 |
+| 10 | Fork against **real** Permit2 (tests 2 / 3 / 5 run on fork, not mocks) | both delegations, with 2 & 5 |
 
-Canonical test vector (frozen Order digest, spender = deployed address re-verified pre-mainnet):
+Canonical test vector (frozen Order digest; spender = deployed address, re-verified before any deployment):
 
 ```text
 5ff361376d4ddc05816a8b8bc3e711e0faba4dd7cc988d2f465cb150b246cb79
@@ -303,7 +281,7 @@ spartan1/
 ├── client/
 │   ├── order.py              # Order builder + witness + Permit2 signing (eth-account, eth-abi, eth-hash, web3.py)
 │   └── test_spartan1.py      # triple-digest harness + conformance
-├── distribution/             # Part II — built only after the fork-test gate is green
+├── distribution/
 │   ├── openapi.yaml          # single-source interface schema (layer SPOF)
 │   ├── relay.py              # stateless untrusted relay (P1–P7, RFQ fan-out, /health)
 │   ├── maker.py              # reference maker webhook (TTL/spread/staleness guardrails ON by default)
@@ -321,8 +299,6 @@ Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written befor
 ---
 
 ## Build & test
-
-*(Once code lands — commands are part of the frozen plan.)*
 
 ```bash
 # contract
@@ -352,15 +328,15 @@ No other dependency. Ever.
 
 ## Security
 
-- **Not audited yet.** Do not deploy with real capital before an external audit; the gate above is a *precondition* to the audit, not a substitute.
+- Any deployment with real capital must be preceded by an **independent external audit**. The [test gate](#test-gate) is a *precondition* to the audit, not a substitute for it.
 - The single most critical technical surface is the **witness type string / typehash** (Across M-06 / OIF failure class). Defense: single source in the SDK, known-digest CI check, negative tamper test.
-- Found something? Open a private security advisory on this repository. No bug bounty is active pre-deployment.
+- Report vulnerabilities via a **private security advisory** on this repository.
 
 ---
 
 ## License & disclaimer
 
-Released under the **MIT License**.
+Released under the **Aphace**.
 
 This software is provided *as is*, without warranty of any kind. Nothing here is financial advice. Firm-quote market making carries adverse-selection risk; executing carries inventory and volatility risk. You are responsible for your own keys, allowances, and capital.
 
