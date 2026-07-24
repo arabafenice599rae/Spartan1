@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Spartan1" width="260"/>
-</p>
+<h1 align="center">Λ&nbsp;&nbsp;S P A R T A N 1</h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-V1_(final)-A32E2E" alt="V1 final"/>
@@ -313,8 +311,7 @@ spartan1/
 │   ├── index.html            # dApp: sign once, transparent 8-relay fan-out, Order-hash display
 │   └── relays.json           # public forkable relay list (convenience, not authority)
 ├── sdk/                      # TypeScript SDK — the witness type string lives here, CI-tested vs known digest
-├── assets/
-│   └── logo.svg
+├── assets/                   # optional — logo.png / logo.svg (social preview, dApp)
 ├── foundry.toml              # Solady pinned to commit; Permit2 as immutable constructor arg
 └── README.md
 ```
@@ -363,10 +360,10 @@ No other dependency. Ever.
 
 ## License & disclaimer
 
-MIT — see [`LICENSE`](LICENSE).
+Released under the **MIT License**.
 
 This software is provided *as is*, without warranty of any kind. Nothing here is financial advice. Firm-quote market making carries adverse-selection risk; executing carries inventory and volatility risk. You are responsible for your own keys, allowances, and capital.
 
 ---
 
-<p align="center"><sub><b>Spartan1</b> — exact settlement, nothing else. Ⲗ</sub></p>
+<p align="center"><sub><b>Spartan1</b> — exact settlement, nothing else. Λ</sub></p>
