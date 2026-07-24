@@ -117,7 +117,7 @@ settle(Order order, uint256 requestedAmount, uint256 nonce, bytes makerSig)
                        both — or total revert (DeltaMismatch)
 ```
 
-No storage. The nonce lives in Permit2; the reentrancy lock lives in a Solady slot cleared at tx end. **I6 is the source of truth on quantities**: it absorbs the code-existence check (a codeless "token" yields Δ = 0 → revert) and reverts fee-on-transfer tokens instead of silently under-delivering.
+No storage. The nonce lives in Permit2; the reentrancy lock lives in a Solady slot cleared at tx end. **I6 is the source of truth on quantities**: it reverts fee-on-transfer tokens instead of silently under-delivering. A codeless "token" is caught one layer earlier — Solady's `safeTransferFrom` reverts `TransferFromFailed` because `extcodesize` is 0 — so no explicit code-length check is needed on the path (proven by gate 5, not deduced).
 
 **Fees & gasless.** Hot path (ts < fillWindow, maker only): spread is the fee, tip = 0. Fallback (anyone): tip = maxTip flows to `msg.sender` out of the maker's margin; the taker always receives exactly `sellAmount`. Makers sign off-chain and pay zero gas. No ERC-4337, no paymaster.
 
@@ -172,7 +172,7 @@ invariant_expiredOrderNoStateChange:
 | Slippage / sandwich | impossible | zero band by construction |
 | Arbitrary fee extraction | impossible | tip = `requested − sellAmount`, capped by signature |
 | Reentrancy / cross-order delta confusion | impossible | I0, non-removable |
-| Codeless address as token (EOA / precompile / empty) | impossible | Solady `balanceOf` → 0 → `DeltaMismatch` |
+| Codeless address as token (EOA / precompile / empty) | impossible | Solady `safeTransferFrom` → `TransferFromFailed` (codeless: `extcodesize` 0) — proven by gate 5 |
 | Fee-on-transfer silent loss | impossible | I6 reverts |
 | dApp shows one order, user signs another | mitigated | Order hash displayed pre-signature (anti-phishing) |
 | EIP-7702 maker with non-1271 delegate | clean revert | `InvalidContractSignature`, never a wrong signer |
@@ -260,10 +260,16 @@ Blocking gate — **the contract does not deploy without every row green**. Test
 | 9 | Foundry invariant testing (`invariant_*`) on I6 | — |
 | 10 | Fork against **real** Permit2 (tests 2 / 3 / 5 run on fork, not mocks) | both delegations, with 2 & 5 |
 
-Canonical test vector (frozen Order digest; spender = deployed address, re-verified before any deployment):
+Canonical test vector — reproduced (not regenerated) and asserted byte-for-byte across client
+(`order.py`), an independent `eth_account` oracle, and forge (`Spartan1.t.sol` test 1). The vector uses
+`chainId = 8453` and a **placeholder** `spender = 0x1111…1111`; before mainnet, replace `spender` with
+the deployed Spartan1 address and re-freeze both values.
 
 ```text
-5ff361376d4ddc05816a8b8bc3e711e0faba4dd7cc988d2f465cb150b246cb79
+witness (keccak256(abi.encode(ORDER_TYPEHASH, order))):
+  0xcd06eda903e77bb9f5b8b5fd77566d10bfd03e0a68d483411f90b7f6b0465c58
+digest  (EIP-712 PermitWitnessTransferFrom signing hash):
+  0xbbb89e334fb04f3e32eecb7e77b2a812437ad7dcdaa0101fa3334f1d91daa63b
 ```
 
 Keccak comes from `eth-hash` (audited), never reimplemented.
@@ -320,9 +326,11 @@ CI enforces: `forge test` green · digest match (client == oracle == solidity) �
 | Dependency | Role | Policy |
 |---|---|---|
 | [Permit2](https://github.com/Uniswap/permit2) | authorization: witness, nonce, deadline, chainId, pull | canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`, immutable constructor arg, `code.length > 0` asserted at deploy |
-| [Solady](https://github.com/Vectorized/solady) | `ReentrancyGuardTransient` (SSTORE fallback off-mainnet by default) + `SafeTransferLib` (+ `balanceOf`) | **pinned to a commit**, re-read at pin time — sources are verified live, never from memory |
+| [Solady](https://github.com/Vectorized/solady) | `ReentrancyGuardTransient` (SSTORE fallback off-mainnet by default) + `SafeTransferLib` (+ `balanceOf`) | **pinned to commit `ab96a830e705de13e0f58cfaefadab4ac8257655`**; `balanceOf` assembly + reentrancy fallback verified live against this commit |
 
-No other dependency. Ever.
+No other runtime dependency. Ever.
+
+**Test-only pins** (exact — the gate is green only against these; Solady is rolling, so it is pinned by commit): `permit2 cc56ad0f3439c502c246fc5cfcc3db92bb8b7219` · `solmate 8d910d876f51c3b2585c9109409d601f600e68e1` · `forge-std 6e8c4a92c9a8b31c1b0f0c39296d1fa4695c7df8`. The suite deploys the **real** Permit2 (etched from its canonical bytecode at `0x0000…22D473…`), never a mock.
 
 ---
 

@@ -80,19 +80,19 @@ contract Spartan1 is ReentrancyGuardTransient {
 
     // ───────────────────────────── errors ─────────────────────────────
 
-    error BadWindow();      // fillWindow > deadline                  (I2c)
-    error SameToken();      // sellToken == buyToken                  (I9)
-    error ZeroAmount();     // sellAmount == 0                        (I10)
-    error ZeroRecipient();  // recipient == address(0)                (I11)
-    error NotMaker();       // hot-window caller is not the maker     (W)
+    error BadWindow();      // fillWindow > deadline                    (I2c)
+    error SameToken();      // sellToken == buyToken                    (I9)
+    error ZeroAmount();     // sellAmount == 0                          (I10)
+    error ZeroRecipient();  // recipient == address(0)                  (I11)
+    error NotMaker();       // hot-window caller is not the maker       (W)
     error BadAmount();      // requestedAmount != window-derived amount (W)
     error DeltaMismatch();  // I6 postcondition failed — total revert
-    error NoCode();         // Permit2 address has no code (deploy-time only)
 
     // ─────────────────────────── constructor ──────────────────────────
 
     constructor(ISignatureTransfer permit2_) {
-        if (address(permit2_).code.length == 0) revert NoCode();
+        // Deploy-time assertion: the trust anchor must be live code, not an EOA/empty address.
+        require(address(permit2_).code.length > 0, "PERMIT2_NOT_DEPLOYED");
         PERMIT2 = permit2_;
     }
 
@@ -160,20 +160,25 @@ contract Spartan1 is ReentrancyGuardTransient {
 
         // 6. payout: sellAmount → taker; tip (if any) → caller.
         SafeTransferLib.safeTransfer(order.sellToken, takerAddr, order.sellAmount);
-        if (requestedAmount > order.sellAmount) {
-            SafeTransferLib.safeTransfer(
-                order.sellToken, msg.sender, requestedAmount - order.sellAmount
-            );
+        uint256 tip = requestedAmount - order.sellAmount;             // maxTip (fallback) or 0 (hot)
+        if (tip != 0) {
+            SafeTransferLib.safeTransfer(order.sellToken, msg.sender, tip);
         }
 
         // 7. I6 — atomic two-of-two delta postcondition: both sides exact, or total revert.
+        //    When the executor self-fills an open order (takerAddr == msg.sender), the tip and the
+        //    sellAmount land in the SAME address, so the taker-leg delta legitimately equals
+        //    sellAmount + tip. `expectedTaker` accounts for that merge; for a third-party taker
+        //    (takerAddr != msg.sender) the tip goes elsewhere and the delta must be exactly sellAmount.
+        uint256 expectedTaker =
+            order.sellAmount + (takerAddr == msg.sender ? tip : 0);
         if (
             SafeTransferLib.balanceOf(order.buyToken, order.recipient) - bRecipient
                 != order.buyAmount
         ) revert DeltaMismatch();
         if (
             SafeTransferLib.balanceOf(order.sellToken, takerAddr) - bTaker
-                != order.sellAmount
+                != expectedTaker
         ) revert DeltaMismatch();
     }
 }
