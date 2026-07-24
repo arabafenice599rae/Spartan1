@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 620" role="img" aria-label="Spartan1 logo">
+  <!-- crest -->
+  <path fill="#A32E2E" d="M256 26
+    C 176 26 116 74 96 142
+    L 132 142
+    C 152 96 200 66 256 66
+    C 312 66 360 96 380 142
+    L 416 142
+    C 396 74 336 26 256 26 Z"/>
+  <!-- helmet: corinthian, front view, T-opening cut out via evenodd -->
+  <path fill="#B8863B" fill-rule="evenodd" d="
+    M 256 86
+    C 168 86 112 152 112 240
+    L 112 316
+    C 112 344 122 362 138 376
+    L 196 486
+    C 202 498 216 496 218 484
+    L 230 400
+    C 238 404 247 406 256 406
+    C 265 406 274 404 282 400
+    L 294 484
+    C 296 496 310 498 316 486
+    L 374 376
+    C 390 362 400 344 400 316
+    L 400 240
+    C 400 152 344 86 256 86
+    Z
+    M 150 252
+    C 172 230 212 226 232 242
+    C 214 264 172 266 150 252
+    Z
+    M 362 252
+    C 340 230 300 226 280 242
+    C 298 264 340 266 362 252
+    Z
+    M 244 292
+    C 244 286 268 286 268 292
+    L 268 398
+    C 268 420 262 434 256 446
+    C 250 434 244 420 244 398
+    Z"/>
+  <!-- wordmark -->
+  <text x="256" y="576" text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif" font-weight="800"
+        font-size="72" letter-spacing="10" fill="#B8863B">SPARTAN<tspan fill="#A32E2E">1</tspan></text>
+</svg>
