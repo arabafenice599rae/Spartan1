@@ -1,0 +1,36 @@
+# Spartan1 — Foundry config.
+#
+# Dependency pins (EXACT — the gate is green only against these; a bump is a separate,
+# fully re-run change). Solady is rolling (no stable releases), so it is pinned by commit.
+#   solady    ab96a830e705de13e0f58cfaefadab4ac8257655
+#   permit2   cc56ad0f3439c502c246fc5cfcc3db92bb8b7219
+#   solmate   8d910d876f51c3b2585c9109409d601f600e68e1   (submodule of permit2)
+#   forge-std 6e8c4a92c9a8b31c1b0f0c39296d1fa4695c7df8
+
+[profile.default]
+src = "src"
+test = "test"
+libs = ["lib"]
+solc = "0.8.24"
+optimizer = true
+optimizer_runs = 1_000_000
+# Permit2 (compiled from source in the test suite) hits stack-too-deep without the IR pipeline.
+via_ir = true
+remappings = [
+    "solady/=lib/solady/src/",
+    "permit2/=lib/permit2/",
+    "solmate/=lib/permit2/lib/solmate/",
+    "forge-std/=lib/forge-std/src/",
+]
+
+[fuzz]
+runs = 512
+
+[invariant]
+runs = 256
+depth = 32
+
+# Optional fork gate (tests 2/3/5/10 against real Permit2). Set L2_RPC and run:
+#   forge test --fork-url $L2_RPC
+[rpc_endpoints]
+l2 = "${L2_RPC}"
