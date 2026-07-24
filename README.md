@@ -336,7 +336,7 @@ No other dependency. Ever.
 
 ## License & disclaimer
 
-Released under the **Aphace**.
+Released under the **Apache**.
 
 This software is provided *as is*, without warranty of any kind. Nothing here is financial advice. Firm-quote market making carries adverse-selection risk; executing carries inventory and volatility risk. You are responsible for your own keys, allowances, and capital.
 
