@@ -253,7 +253,7 @@ Blocking gate — **the contract does not deploy without every row green**. Test
 | 2 | Expired order → `invariant_expiredOrderNoStateChange` | deadline delegation |
 | 3 | Over-pull → `InvalidAmount`, nonce intact, order still settleable | — |
 | 4 | ERC-777 callback → `nonReentrant` / `DeltaMismatch` | — |
-| 5 | Codeless token ×3 (EOA, precompile `0x01`, empty address) → `DeltaMismatch` | code-check absorption into I6 |
+| 5 | Codeless token ×3 (EOA, precompile `0x01`, empty address) → `TransferFromFailed` | no code-length check needed on the path |
 | 6 | Fee-on-transfer token → `DeltaMismatch` | — |
 | 7 | `fillWindow ± 1` boundary | — |
 | 8 | Fuzz on I6 delta invariants | — |
@@ -344,7 +344,7 @@ No other runtime dependency. Ever.
 
 ## License & disclaimer
 
-Released under the **Apache**.
+Released under the **MIT** license — matching the `SPDX-License-Identifier: MIT` in `src/Spartan1.sol` (the identifier that lands in on-chain source verification), and consistent with Permit2 and Solady, both MIT. See [`LICENSE`](./LICENSE).
 
 This software is provided *as is*, without warranty of any kind. Nothing here is financial advice. Firm-quote market making carries adverse-selection risk; executing carries inventory and volatility risk. You are responsible for your own keys, allowances, and capital.
 
