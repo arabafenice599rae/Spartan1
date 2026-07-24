@@ -14,7 +14,9 @@ libs = ["lib"]
 solc = "0.8.24"
 optimizer = true
 optimizer_runs = 1_000_000
-# Permit2 (compiled from source in the test suite) hits stack-too-deep without the IR pipeline.
+# via_ir is part of the tested/deployed Spartan1 artifact — changing it changes the deployed
+# bytecode, so it stays fixed. (The suite etches Permit2 via DeployPermit2 rather than compiling
+# it from source, so the solc 0.8.24 pin is sufficient on its own.)
 via_ir = true
 remappings = [
     "solady/=lib/solady/src/",

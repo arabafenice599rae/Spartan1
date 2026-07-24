@@ -574,7 +574,8 @@ contract Spartan1Test is Test, DeployPermit2 {
     function test_gate10_fork_realPermit2() public {
         string memory rpc = vm.envOr("L2_RPC", string(""));
         if (bytes(rpc).length == 0) {
-            emit log("gate10 SKIPPED: set L2_RPC to run against real Permit2");
+            // Report a real SKIP — not a green PASS for a gate that never ran.
+            vm.skip(true, "gate10 requires L2_RPC to run against real Permit2");
             return;
         }
         vm.createSelectFork(rpc);
