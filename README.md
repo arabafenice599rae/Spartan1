@@ -20,6 +20,8 @@
 
 ## Table of contents
 
+- [Why Spartan1?](#why-spartan1)
+- [Quick start](#quick-start)
 - [Security model](#security-model)
 - [The Order](#the-order)
 - [`settle()` lifecycle](#settle-lifecycle)
@@ -31,9 +33,47 @@
 - [Test gate](#test-gate)
 - [Repository layout](#repository-layout)
 - [Build & test](#build--test)
+- [FAQ](#faq)
 - [Dependencies](#dependencies)
 - [Security](#security)
 - [License & disclaimer](#license--disclaimer)
+
+---
+
+## Why Spartan1?
+
+Spartan1 is not trying to be a better DEX. It trades scope for **tighter, provable guarantees on a narrow set of properties** — and is explicit about what it gives up to get them.
+
+| Tighter on | Deliberately not |
+|---|---|
+| **Atomic exactness** — both legs settle at the signed amounts, proven on-chain (I6), or the whole tx reverts | Liquidity, routing, or price discovery — no oracle, no fair-value logic |
+| **Per-operation blast radius** — makers sign via Permit2; zero standing allowance to Spartan1 | An aggregator or ecosystem — it is a settlement *primitive*, integrated behind existing frontends |
+| **Minimal surface** — one file, one function, one library, one trust anchor, no storage/owner/proxy | An everything-store — `settleBatch` / `settleCross` are permanently out of scope, by decision |
+
+If you need deep liquidity and smart routing, use 0x / UniswapX / CoW. If you need a firm-quote swap that either executes exactly as signed or not at all, that is this.
+
+---
+
+## Quick start
+
+```bash
+# clone with submodules — pinned Permit2 / Solady / solmate / forge-std live in lib/
+git clone --recursive https://github.com/arabafenice599rae/Spartan1.git
+cd Spartan1
+# already cloned without --recursive?
+git submodule update --init --recursive
+
+# contract: build + gate suite
+forge build
+forge test                       # 21 passed; 1 skipped (gate 10 needs L2_RPC)
+forge test --fork-url $L2_RPC    # optional: run gate 10 against real Permit2
+
+# signing core: triple-digest harness (must reproduce the canonical digest)
+pip install eth-account eth-abi "eth-hash[pycryptodome]" web3
+python client/test_spartan1.py
+```
+
+Foundry fetches solc `0.8.24` automatically. The suite deploys the **real** Permit2 (etched from its canonical bytecode), so no fork or RPC is needed for gates 1–9.
 
 ---
 
@@ -115,6 +155,25 @@ settle(Order order, uint256 requestedAmount, uint256 nonce, bytes makerSig)
   7. I6 postcondition  Δ(recipient, buyToken)  == buyAmount
                     ∧  Δ(takerAddr, sellToken) == sellAmount
                        both — or total revert (DeltaMismatch)
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Maker
+    participant X as Executor (msg.sender)
+    participant S as Spartan1
+    participant P as Permit2
+    Note over M: signs Order off-chain (EIP-712 witness) · 0 gas
+    X->>S: settle(order, requestedAmount, nonce, makerSig)
+    S->>S: static checks · derive taker · window → amount
+    S->>P: permitWitnessTransferFrom — maker pull FIRST (fail-closed)
+    Note right of P: deadline · amount · nonce · signature<br/>verified before any executor funds move
+    P->>S: sellToken (sellAmount + tip) — from maker
+    X->>S: buyToken (buyAmount) — from executor
+    S->>M: buyAmount → recipient
+    S->>X: sellAmount → taker · tip → executor
+    S->>S: I6 — exact deltas on both legs, or total revert
 ```
 
 No storage. The nonce lives in Permit2; the reentrancy lock lives in a Solady slot cleared at tx end. **I6 is the source of truth on quantities**: it reverts fee-on-transfer tokens instead of silently under-delivering. A codeless "token" is caught one layer earlier — Solady's `safeTransferFrom` reverts `TransferFromFailed` because `extcodesize` is 0 — so no explicit code-length check is needed on the path (proven by gate 5, not deduced).
@@ -302,6 +361,8 @@ spartan1/
 
 Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written before the contract), fork gate green, *then* the distribution layer against the proven Order shape.
 
+**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core). `distribution/`, `sdk/`, `assets/` are Parte II: specified above, not yet built.
+
 ---
 
 ## Build & test
@@ -321,16 +382,38 @@ CI enforces: `forge test` green · digest match (client == oracle == solidity) �
 
 ---
 
+## FAQ
+
+**How is this different from 0x Settler, UniswapX, or CoW?**
+Those optimize liquidity, routing, and ecosystem. Spartan1 doesn't — it is a firm-quote settlement *primitive* with tighter guarantees on atomic exactness and blast radius (see [Why Spartan1?](#why-spartan1) and the [security model](#security-model)). Use them for liquidity; use this for exact-or-revert settlement.
+
+**Is it safe to use in production?**
+Not yet. No deployment with real capital should happen without an **independent external audit** — the [test gate](#test-gate) is a precondition to that audit, not a substitute. There is currently no deployment, no audit, and no release.
+
+**Which wallets are supported?**
+Any wallet with `eth_signTypedData_v4` (MetaMask, Rabby, Coinbase…) works today — the only prerequisite is the one-time `approve(Permit2)` per token. Smart-account makers sign via ERC-1271; tested scope is EOA + Safe + common smart wallets. Counterfactual EIP-6492 is out of scope, and an EIP-7702 delegate without `isValidSignature` reverts cleanly (never mis-verifies).
+
+**Does the maker pay gas?**
+No. Makers sign off-chain and pay zero gas; the executor submits the tx and pays gas, recovered from the tip in the fallback window.
+
+**Which tokens work?**
+Any standard ERC-20 via Permit2. Fee-on-transfer and rebasing tokens are *non-settleable by choice* — I6 reverts them rather than allow a silent loss.
+
+**Is it deployed or audited?**
+No — see "Is it safe to use in production?". This repository is the core (contract + gate + signing core); the distribution layer is Parte II and not yet built.
+
+---
+
 ## Dependencies
 
 | Dependency | Role | Policy |
 |---|---|---|
 | [Permit2](https://github.com/Uniswap/permit2) | authorization: witness, nonce, deadline, chainId, pull | canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`, immutable constructor arg, `code.length > 0` asserted at deploy |
-| [Solady](https://github.com/Vectorized/solady) | `ReentrancyGuardTransient` (SSTORE fallback off-mainnet by default) + `SafeTransferLib` (+ `balanceOf`) | **pinned to commit `ab96a830e705de13e0f58cfaefadab4ac8257655`**; `balanceOf` assembly + reentrancy fallback verified live against this commit |
+| [Solady](https://github.com/Vectorized/solady) | `ReentrancyGuardTransient` (SSTORE fallback off-mainnet by default) + `SafeTransferLib` (+ `balanceOf`) | **pinned to commit [`ab96a83`](https://github.com/Vectorized/solady/commit/ab96a830e705de13e0f58cfaefadab4ac8257655)**; `balanceOf` assembly + reentrancy fallback verified live against this commit |
 
 No other runtime dependency. Ever.
 
-**Test-only pins** (exact — the gate is green only against these; Solady is rolling, so it is pinned by commit): `permit2 cc56ad0f3439c502c246fc5cfcc3db92bb8b7219` · `solmate 8d910d876f51c3b2585c9109409d601f600e68e1` · `forge-std 6e8c4a92c9a8b31c1b0f0c39296d1fa4695c7df8`. The suite deploys the **real** Permit2 (etched from its canonical bytecode at `0x0000…22D473…`), never a mock.
+**Test-only pins** (exact — the gate is green only against these; Solady is rolling, so it is pinned by commit): [`permit2 cc56ad0`](https://github.com/Uniswap/permit2/commit/cc56ad0f3439c502c246fc5cfcc3db92bb8b7219) · [`solmate 8d910d8`](https://github.com/transmissions11/solmate/commit/8d910d876f51c3b2585c9109409d601f600e68e1) · [`forge-std 6e8c4a9`](https://github.com/foundry-rs/forge-std/commit/6e8c4a92c9a8b31c1b0f0c39296d1fa4695c7df8). The suite deploys the **real** Permit2 (etched from its canonical bytecode at `0x0000…22D473…`), never a mock.
 
 ---
 
