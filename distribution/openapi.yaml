@@ -386,7 +386,7 @@ components:
             to a deployed Spartan1 address reports `true`.
         dryRun:
           type: boolean
-          description: Present only in DRY_RUN mode; always paired with `settleable: false`.
+          description: 'Present only in DRY_RUN mode; always paired with `settleable: false`.'
         warning:
           type: string
           description: Human-readable note explaining why a non-settleable quote cannot settle.

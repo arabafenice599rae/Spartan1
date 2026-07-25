@@ -48,6 +48,15 @@ def check(name: str, cond: bool, extra: str = "") -> None:
     print(f"  [{mark}] {name}" + (f" — {extra}" if extra and not cond else ""))
 
 
+SKIP: list[str] = []
+
+
+def skip(name: str, reason: str) -> None:
+    # A declared SKIP, never a silent PASS (same discipline as the fork gate).
+    SKIP.append(name)
+    print(f"  [SKIP] {name} — {reason}")
+
+
 class StubRpc(R.Rpc):
     """Deterministic stand-in for a node. Lets P6/P7 and the ERC-1271 branch be
     exercised without a live chain; the real thing is covered by the fork gate."""
@@ -616,6 +625,71 @@ def test_unknown_routes():
         srv.close()
 
 
+def test_schema_conformance():
+    print("\nschema conformance — openapi.yaml is the layer SPOF; PARSING IT is the test")
+    print("(the behavioural suites never load the YAML — this is the gate that catches a broken schema)")
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec_path = os.path.join(here, "openapi.yaml")
+    try:
+        import yaml
+    except ImportError:
+        for name in ("openapi.yaml parses as valid YAML",
+                     "declared endpoints == implemented routes",
+                     "Order property order == ORDER_TYPEHASH field order",
+                     "settleable maker response keys subset of SignedOrder",
+                     "DRY_RUN maker response keys subset of SignedOrder"):
+            skip(name, "pyyaml not installed (schema gate needs it)")
+        return
+
+    # 1. The PARSE itself is the test — a stray unquoted `: ` (yaml sees a nested mapping) raises here.
+    parsed = False
+    try:
+        with open(spec_path) as fh:
+            spec = yaml.safe_load(fh)
+        parsed = isinstance(spec, dict)
+    except yaml.YAMLError as exc:
+        print(f"    YAML ERROR: {exc}")
+    check("openapi.yaml parses as valid YAML", parsed)
+    if not parsed:
+        return
+
+    # 2. Every declared path is implemented, and vice versa (I did this by hand before; now it's a test).
+    declared = set(spec["paths"].keys())
+    implemented = {"/order", "/orders", "/rfq/quote", "/rfq/tokens", "/quote", "/health"}
+    check("declared endpoints == implemented routes", declared == implemented,
+          f"symmetric diff: {declared ^ implemented}")
+
+    # 3. Order property order == the ORDER_TYPEHASH preimage (reorder → different typehash → dead sigs).
+    from order import ORDER_TYPE
+    inside = ORDER_TYPE[ORDER_TYPE.index("(") + 1:ORDER_TYPE.rindex(")")]
+    typehash_fields = [seg.split()[1] for seg in inside.split(",")]
+    order_props = list(spec["components"]["schemas"]["Order"]["properties"].keys())
+    check("Order property order == ORDER_TYPEHASH field order",
+          order_props == typehash_fields, f"{order_props} vs {typehash_fields}")
+
+    # 4. A LIVE maker response's keys ⊆ SignedOrder's declared properties — the exact regression this
+    #    gate exists for (maker emits settleable/dryRun/warning; the schema must admit them).
+    signed_props = set(spec["components"]["schemas"]["SignedOrder"]["properties"].keys())
+    import maker as M
+    from fractions import Fraction
+    body = {"sellToken": SELL, "buyToken": BUY, "sellAmount": str(10**18)}
+
+    def _feed():
+        return M.reference_quote_fn({(SELL, BUY): M.Quote(mid=Fraction(3000 * 10**6, 10**18),
+                                                          spread_bps=20)})
+    cfg_ok = M.Config.build(spartan1="0x000000000000000000000000000000000000dEaD",
+                            private_key=MAKER_PK, chain_id=CHAIN_ID, port=0)
+    resp_ok = M.make_signed_quote(cfg_ok, _feed(), M.InventoryLedger({SELL: 10**24}), body, 1_900_000_000)
+    check("settleable maker response keys ⊆ SignedOrder", set(resp_ok) <= signed_props,
+          f"undeclared: {set(resp_ok) - signed_props}")
+
+    cfg_dry = M.Config.build(spartan1=None, private_key=MAKER_PK, chain_id=CHAIN_ID,
+                             dry_run=True, port=0)
+    resp_dry = M.make_signed_quote(cfg_dry, _feed(), M.InventoryLedger({SELL: 10**24}), body, 1_900_000_000)
+    check("DRY_RUN maker response keys ⊆ SignedOrder (settleable/dryRun/warning declared)",
+          set(resp_dry) <= signed_props, f"undeclared: {set(resp_dry) - signed_props}")
+
+
 # ══════════════════════════════ runner ═══════════════════════════════════
 def main() -> None:
     print("Spartan1 relay — conformance gate (openapi.yaml is the reference)")
@@ -636,12 +710,14 @@ def main() -> None:
         test_fanout_uniformity,
         test_relay_cannot_forge,
         test_unknown_routes,
+        test_schema_conformance,
     ):
         fn()
 
     total = len(PASS) + len(FAIL)
     print(f"\n{'=' * 60}")
-    print(f"RESULT: {len(PASS)}/{total} passed, {len(FAIL)} failed")
+    print(f"RESULT: {len(PASS)}/{total} passed, {len(FAIL)} failed"
+          + (f", {len(SKIP)} skipped" if SKIP else ""))
     if FAIL:
         for name in FAIL:
             print(f"  FAILED: {name}")
