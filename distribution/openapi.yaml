@@ -1,0 +1,511 @@
+openapi: 3.1.0
+
+# ============================================================================
+# Spartan1 distribution layer — SINGLE SOURCE OF TRUTH for the wire interface.
+#
+# Every off-chain component (relay, executor, maker, SDK, dApp) conforms to THIS
+# file. If code and this schema disagree, the schema wins and the code is wrong.
+#
+# MOTHER PRINCIPLE (normative, applies to every endpoint below):
+#   A relay — malicious, compromised, or merely buggy — can ONLY omit, delay, or
+#   return data the receiver re-verifies and discards. It can NEVER alter an
+#   amount, move funds, forge a signature, or force unsigned execution.
+#   Receiver-side re-verification is MANDATORY, never optional: an executor that
+#   trusts a relay response has misimplemented this specification.
+#
+# CONSEQUENCE FOR IMPLEMENTERS: no field below is authoritative. `valid`,
+# `orderHash`, and every quote are relay claims. The only authority is the
+# signed Order plus the on-chain settle().
+# ============================================================================
+
+info:
+  title: Spartan1 relay API
+  version: "1"
+  license:
+    name: MIT
+  description: |
+    Order distribution and firm-quote RFQ for the Spartan1 settlement contract.
+
+    ## Perspective inversion (READ THIS FIRST)
+
+    The `Order` struct is MAKER-CENTRIC: the maker gives `sellToken`/`sellAmount`
+    and receives `buyToken`/`buyAmount`. The `GET /quote` adapter is
+    TAKER-CENTRIC, matching the 0x / Uniswap convention where `sellToken` is what
+    the *caller* sells. The two are mirror images and MUST be mapped explicitly:
+
+    | `GET /quote` (taker view) | `Order` field (maker view) |
+    |---------------------------|----------------------------|
+    | `sellToken`  (taker pays) | `buyToken`                 |
+    | `buyToken`   (taker gets) | `sellToken`                |
+    | `sellAmount` (taker pays) | `buyAmount`                |
+    | `buyAmount`  (taker gets) | `sellAmount`               |
+
+    Conflating the two silently inverts a swap. Implementations MUST cover the
+    inversion with a test, not a comment.
+
+    ## Expiry defaults (calibrated on Jupiter's ~55 s flow)
+
+    | Constant             | Value | Meaning                                     |
+    |----------------------|-------|---------------------------------------------|
+    | `QUOTE_TTL`          | 45 s  | `deadline - now` at quote issuance          |
+    | `HOT_WINDOW`         | 30 s  | `fillWindow - now`; maker-only before it    |
+    | `REQUOTE_INTERVAL`   | 5 s   | maker refresh cadence                       |
+    | `MAKER_SIGN_BUDGET`  | 2 s   | relay timeout per maker webhook in `/rfq/quote` |
+
+    L1 doubles `QUOTE_TTL`. Loosening these is explicit and warned: a longer TTL
+    is strictly more adverse selection for the maker.
+
+    ## Deadline semantics
+
+    Permit2 compares with strict `>`, so an order is VALID **at** the deadline
+    second: the predicate is `now <= deadline`, never `now < deadline`. Relay,
+    executor, maker, and dApp MUST all use `<=`; a component using `<` discards
+    orders the chain would still settle.
+
+servers:
+  - url: https://relay.example.org
+    description: Any relay. There is no canonical host, by design.
+
+tags:
+  - name: orders
+    description: Order-driven distribution.
+  - name: rfq
+    description: Request-driven quoting.
+  - name: aggregator
+    description: 0x / Uniswap-compatible adapter.
+  - name: meta
+    description: Health and freshness.
+
+paths:
+  /order:
+    post:
+      tags: [orders]
+      operationId: postOrder
+      summary: Submit a signed Order
+      description: |
+        Applies the closed-list validity predicate P1–P7 and, on success, adds the
+        order to the local pool. IDEMPOTENT by `orderHash` (P5): re-posting an
+        identical order returns `200` with the same body, never a duplicate and
+        never an error.
+
+        A relay MUST NOT rank, match, prioritise, or select counterparties. It
+        stores and it serves.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignedOrder' }
+      responses:
+        '200':
+          description: Accepted (or already present — same body either way).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderAccepted' }
+        '422':
+          description: |
+            Rejected by the predicate. The `failed` array names every predicate
+            that did not hold, so a maker can fix the cause rather than guess.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderRejected' }
+
+  /orders:
+    get:
+      tags: [orders]
+      operationId: getOrders
+      summary: List live orders
+      description: |
+        Returns orders that are still live (`now <= deadline`) in insertion order.
+        No ranking. Expired orders are pruned lazily and never served.
+
+        Each entry carries `sigCheck`, stating HOW the signature was verified —
+        `ecdsa`, `erc1271`, or `deferred`. `deferred` means the relay could not
+        verify (no RPC for a contract maker) and is saying so instead of implying
+        a check it did not perform. Executors re-verify regardless.
+      parameters:
+        - name: sellToken
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/Address' }
+          description: Filter by the token the MAKER gives (maker-centric).
+        - name: buyToken
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/Address' }
+          description: Filter by the token the MAKER receives (maker-centric).
+        - name: taker
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/Address' }
+          description: |
+            Return open orders (`taker == 0x0`) plus orders addressed to this
+            taker. Omit to receive open orders only.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200':
+          description: Live orders.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [orders, count]
+                properties:
+                  orders:
+                    type: array
+                    items: { $ref: '#/components/schemas/PooledOrder' }
+                  count: { type: integer }
+
+  /rfq/quote:
+    post:
+      tags: [rfq]
+      operationId: postRfqQuote
+      summary: Request a firm quote (relay fans out to maker webhooks)
+      description: |
+        The relay forwards the request to EVERY registered maker webhook in
+        parallel, waits at most `MAKER_SIGN_BUDGET`, and returns the single best
+        signed Order.
+
+        Best is defined mechanically, never discretionarily:
+          * `exactOut` (caller fixed `sellAmount`, what they receive) → the quote
+            with the LOWEST `buyAmount` wins (caller pays least).
+          * `exactIn` (caller fixed `buyAmount`, what they pay) → the quote with
+            the HIGHEST `sellAmount` wins (caller receives most).
+        Ties break by earliest arrival. A relay that applies any other rule is
+        non-conformant.
+
+        `404` means no maker is quoting this pair right now. It is a normal
+        outcome and carries NO penalty for any maker: declining to quote is a
+        first-class answer, and relays keep no maker reputation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RfqRequest' }
+      responses:
+        '200':
+          description: Best signed Order, ready to submit to `settle()`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignedOrder' }
+        '404':
+          description: Not quoting. Not an error.
+        '422':
+          description: Malformed request.
+
+  /rfq/tokens:
+    get:
+      tags: [rfq]
+      operationId: getRfqTokens
+      summary: Pairs the registered makers are willing to quote
+      description: |
+        Advertisement, not a commitment: a listed pair may still return `404`, and
+        an unlisted pair may still be quoted. Discovery hint only.
+      responses:
+        '200':
+          description: Advertised pairs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pairs]
+                properties:
+                  pairs:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pair' }
+
+  /quote:
+    get:
+      tags: [aggregator]
+      operationId: getQuote
+      summary: 0x / Uniswap-compatible quote adapter (TAKER-centric)
+      description: |
+        Drop-in shape for existing aggregator and wallet routing code. Parameters
+        are TAKER-centric — see the perspective-inversion table in `info.description`.
+
+        Spartan1 is exact on both legs by construction, so `EXACT_INPUT` and
+        `EXACT_OUTPUT` are both supported with zero slippage and no price impact
+        band. Exactly one of `sellAmount` / `buyAmount` MUST be supplied.
+      parameters:
+        - name: sellToken
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Address' }
+          description: Token the TAKER pays (maps to `Order.buyToken`).
+        - name: buyToken
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Address' }
+          description: Token the TAKER receives (maps to `Order.sellToken`).
+        - name: sellAmount
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/Uint256' }
+          description: EXACT_INPUT — atomic amount the taker pays (`Order.buyAmount`).
+        - name: buyAmount
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/Uint256' }
+          description: EXACT_OUTPUT — atomic amount the taker receives (`Order.sellAmount`).
+        - name: taker
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/Address' }
+      responses:
+        '200':
+          description: |
+            Quote in aggregator shape. `order` + `signature` are the settleable
+            payload; the flat fields are the taker-centric restatement.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AggregatorQuote' }
+        '404':
+          description: No quote available.
+        '422':
+          description: Malformed request (e.g. both or neither amount supplied).
+
+  /health:
+    get:
+      tags: [meta]
+      operationId: getHealth
+      summary: Liveness, configuration, and stateless freshness challenge
+      description: |
+        Pass `nonce` to receive a freshness challenge: the relay echoes the nonce
+        together with a recent block number and hash it read from its own RPC.
+        A phantom relay that serves stale or fabricated listings cannot produce a
+        current blockhash, so clients can discard it — this is anti-Sybil rule 3
+        (guaranteed rendezvous) made checkable.
+
+        `predicates` lists which of P1–P7 this relay actually enforces. A relay
+        with no RPC configured CANNOT evaluate P6/P7 and MUST report their absence
+        here rather than imply a check it never ran.
+      parameters:
+        - name: nonce
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: Relay status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+components:
+  schemas:
+    Address:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{40}$'
+
+    Bytes32:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{64}$'
+
+    Uint256:
+      type: string
+      pattern: '^[0-9]+$'
+      description: |
+        Atomic amount as a DECIMAL STRING, never a JSON number. uint256 exceeds
+        IEEE-754 double precision, so a JSON number would silently round. Human
+        vs atomic conversion lives in the client and never on the wire.
+
+    Signature:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{130}$'
+      description: 65-byte EOA signature (r‖s‖v). ERC-1271 makers may use other lengths.
+
+    Order:
+      type: object
+      description: |
+        The 10 signed fields, MAKER-CENTRIC, in the exact order of the on-chain
+        struct and of `ORDER_TYPEHASH`. Field order is frozen: reordering changes
+        the typehash and invalidates every signature.
+      required:
+        [maker, taker, sellToken, buyToken, sellAmount, buyAmount,
+         recipient, maxTip, fillWindow, deadline]
+      additionalProperties: false
+      properties:
+        maker:      { $ref: '#/components/schemas/Address' }
+        taker:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: '`0x0000…0000` = open order; anyone may settle as taker.'
+        sellToken:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: Token the MAKER gives. Equals Permit2 `permitted.token`.
+        buyToken:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: Token the MAKER receives.
+        sellAmount:
+          allOf: [{ $ref: '#/components/schemas/Uint256' }]
+          description: Exact atomic amount the taker receives.
+        buyAmount:
+          allOf: [{ $ref: '#/components/schemas/Uint256' }]
+          description: Exact atomic amount the recipient receives.
+        recipient:  { $ref: '#/components/schemas/Address' }
+        maxTip:
+          allOf: [{ $ref: '#/components/schemas/Uint256' }]
+          description: Executor tip cap, in sellToken. `permitted = sellAmount + maxTip`.
+        fillWindow:
+          type: integer
+          description: 'Unix seconds. `now < fillWindow`: maker only. `now >= fillWindow`: anyone, tip flows.'
+        deadline:
+          type: integer
+          description: 'Unix seconds. MUST equal the Permit2 permit deadline. Valid AT this second.'
+
+    SignedOrder:
+      type: object
+      required: [order, nonce, signature]
+      additionalProperties: false
+      properties:
+        order: { $ref: '#/components/schemas/Order' }
+        nonce:
+          allOf: [{ $ref: '#/components/schemas/Uint256' }]
+          description: |
+            Permit2 unordered nonce, bound inside the signed digest. Makers MUST
+            draw it at random over 256 bits; sequential nonces invite bitmap-word
+            collisions between concurrent orders from the same maker.
+        signature: { $ref: '#/components/schemas/Signature' }
+        chainId:
+          type: integer
+          description: Optional echo. The relay validates against its own configured chain.
+        spartan1:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: |
+            Optional echo of the settlement contract the signature is bound to
+            (the Permit2 `spender`). A signature is valid for exactly one
+            deployed Spartan1 address and nowhere else.
+
+    SigCheck:
+      type: string
+      enum: [ecdsa, erc1271, deferred]
+      description: |
+        How the relay verified P1. `deferred` = could not verify (contract maker,
+        no RPC) and says so. Never a silent pass.
+
+    PooledOrder:
+      allOf:
+        - $ref: '#/components/schemas/SignedOrder'
+        - type: object
+          required: [orderHash, receivedAt, sigCheck]
+          properties:
+            orderHash:
+              allOf: [{ $ref: '#/components/schemas/Bytes32' }]
+              description: |
+                `keccak256(abi.encode(ORDER_TYPEHASH, order))` — the Permit2
+                witness. A relay claim: recompute it locally before use.
+            receivedAt: { type: integer, description: Unix seconds. }
+            sigCheck:   { $ref: '#/components/schemas/SigCheck' }
+
+    OrderAccepted:
+      type: object
+      required: [orderHash, valid, sigCheck, duplicate]
+      properties:
+        orderHash: { $ref: '#/components/schemas/Bytes32' }
+        valid:     { type: boolean, enum: [true] }
+        sigCheck:  { $ref: '#/components/schemas/SigCheck' }
+        duplicate:
+          type: boolean
+          description: 'true = already in the pool; the request was a no-op (P5 idempotence).'
+        skipped:
+          type: array
+          items: { type: string }
+          description: Predicates the relay could not evaluate (e.g. `P6` without RPC).
+
+    OrderRejected:
+      type: object
+      required: [valid, failed]
+      properties:
+        valid: { type: boolean, enum: [false] }
+        failed:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [P1, P2, P3, P4, P5, P6, P7]
+        detail:
+          type: object
+          additionalProperties: { type: string }
+
+    RfqRequest:
+      type: object
+      description: |
+        MAKER-CENTRIC, matching `Order`. Supply exactly one of `sellAmount`
+        (exactOut: the amount you want to receive) or `buyAmount` (exactIn: the
+        amount you are willing to pay).
+      required: [sellToken, buyToken]
+      additionalProperties: false
+      properties:
+        sellToken:  { $ref: '#/components/schemas/Address' }
+        buyToken:   { $ref: '#/components/schemas/Address' }
+        sellAmount: { $ref: '#/components/schemas/Uint256' }
+        buyAmount:  { $ref: '#/components/schemas/Uint256' }
+        taker:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: Bind the quote to this taker. Omit for an open order.
+
+    Pair:
+      type: object
+      required: [sellToken, buyToken]
+      properties:
+        sellToken: { $ref: '#/components/schemas/Address' }
+        buyToken:  { $ref: '#/components/schemas/Address' }
+
+    AggregatorQuote:
+      type: object
+      required: [sellToken, buyToken, sellAmount, buyAmount, order, signature, nonce]
+      properties:
+        sellToken:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: TAKER pays this (`= order.buyToken`).
+        buyToken:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: TAKER receives this (`= order.sellToken`).
+        sellAmount:
+          allOf: [{ $ref: '#/components/schemas/Uint256' }]
+          description: TAKER pays this amount (`= order.buyAmount`).
+        buyAmount:
+          allOf: [{ $ref: '#/components/schemas/Uint256' }]
+          description: TAKER receives this amount (`= order.sellAmount`).
+        price:
+          type: string
+          description: 'Informational decimal string: buyAmount / sellAmount, taker view. Never used on-chain.'
+        allowanceTarget:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: |
+            The Spartan1 contract. The taker/executor approves it for `buyToken`
+            (their own capital, bounded). The MAKER approves Permit2, never Spartan1.
+        to:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: Settlement contract to call `settle()` on.
+        order:     { $ref: '#/components/schemas/Order' }
+        nonce:     { $ref: '#/components/schemas/Uint256' }
+        signature: { $ref: '#/components/schemas/Signature' }
+
+    Health:
+      type: object
+      required: [chainId, permit2, spartan1, ordersOpen, uptime, predicates]
+      properties:
+        chainId:  { type: integer }
+        permit2:  { $ref: '#/components/schemas/Address' }
+        spartan1:
+          allOf: [{ $ref: '#/components/schemas/Address' }]
+          description: The `spender` every signature served by this relay is bound to.
+        ordersOpen: { type: integer, description: Live orders currently pooled. }
+        uptime:     { type: integer, description: Seconds since start. }
+        predicates:
+          type: array
+          items:
+            type: string
+            enum: [P1, P2, P3, P4, P5, P6, P7]
+          description: Predicates actually enforced. Absent = not evaluated.
+        challenge:
+          type: object
+          description: Present only when `nonce` was supplied.
+          required: [nonce, blockNumber, blockHash]
+          properties:
+            nonce:       { type: string }
+            blockNumber: { type: integer }
+            blockHash:   { $ref: '#/components/schemas/Bytes32' }
+        version: { type: string }

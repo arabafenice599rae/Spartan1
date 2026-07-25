@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "Bootstrap convenience list — NOT an authority.",
+    "Inclusion verifies only that a relay is real and reachable; never who runs it.",
+    "A client-local list ALWAYS takes precedence over this file.",
+    "This file lives in a forkable Git repo precisely so that no one controls it:",
+    "fork it, edit it, ignore it. Total-censorship fallback: whoever holds a signed",
+    "Order can call settle() directly on-chain and bypass every relay here.",
+    "Relays are NEVER paid — no fee, no reward, no token, permanent invariant."
+  ],
+  "chains": {
+    "8453": { "spartan1": null, "relays": [] },
+    "42161": { "spartan1": null, "relays": [] }
+  },
+  "fanout": { "target": 8, "min": 3, "selection": "uniform-random" }
+}
