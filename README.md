@@ -363,7 +363,7 @@ spartan1/
 
 Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written before the contract), fork gate green, *then* the distribution layer against the proven Order shape.
 
-**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus `distribution/` **partially** built — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, and the `test_relay.py` (96 assertions) + `test_maker.py` (60 assertions) conformance gates. Still unbuilt: `distribution/executor.py`, `distribution/index.html`, `sdk/`, and `assets/`.
+**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus `distribution/` **partially** built — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, and the `test_relay.py` (96 assertions) + `test_maker.py` (63 assertions) conformance gates. Still unbuilt: `distribution/executor.py`, `distribution/index.html`, `sdk/`, and `assets/`.
 
 ---
 
@@ -381,7 +381,7 @@ python client/test_spartan1.py       # triple-digest harness must print the cano
 
 # distribution relay (stdlib only, reuses the signing core)
 python3 distribution/test_relay.py   # relay conformance, 96 assertions
-python3 distribution/test_maker.py   # maker conformance, 60 assertions
+python3 distribution/test_maker.py   # maker conformance, 63 assertions
 ```
 
 CI enforces: `forge test` green · digest match (client == oracle == solidity) · schema conformance for every distribution component. Deployment is manual (`forge create`), never triggered by push. First chains: Base / Arbitrum (L2s with canonical Permit2).

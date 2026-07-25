@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from fractions import Fraction
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "client"))
@@ -246,6 +247,42 @@ def test_inventory_double_commit():
         srv.close()
 
 
+def test_inventory_concurrent():
+    print("\nINVENTORY under CONCURRENCY — N threads, inventory for M<N: the lock must hold")
+    print("(sequential posting proves accounting; only parallel posting proves 'atomically')")
+    # 8 threads, each a 1e18 quote, against 2e18 inventory. Notional caps raised so the
+    # inventory reservation is the sole gate. The relay fans out to makers in parallel, so
+    # this is the real scenario — exactly 2 may be granted, never 3+.
+    ledger = InventoryLedger({SELL: 2 * ONE}, max_quote={SELL: 1000 * ONE},
+                             max_window={SELL: 1000 * ONE})
+    srv = Live(cfg(), feed(), ledger)
+    try:
+        n = 8
+        results: list[Optional[int]] = [None] * n
+
+        def worker(i: int) -> None:
+            code, _ = srv.post("/quote", req(sell_amount=ONE))
+            results[i] = code
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        granted = sum(1 for c in results if c == 200)
+        refused = sum(1 for c in results if c == 404)
+        check("exactly 2 quotes granted (inventory backs exactly 2)", granted == 2,
+              f"granted={granted} results={results}")
+        check("the other 6 refused — no double-commit under concurrency", refused == 6,
+              f"refused={refused} results={results}")
+        _, h = srv.get("/health")
+        check("free inventory is exactly zero after concurrent contention",
+              h["inventory"][SELL.lower()]["free"] == "0", str(h["inventory"]))
+    finally:
+        srv.close()
+
+
 def test_inventory_released_at_deadline():
     print("\ninventory released at deadline — a reservation frees up once the quote expires")
     # ttl 1s, hot 0s (fillWindow == now <= deadline). Inventory backs exactly one quote; raise the
@@ -382,6 +419,7 @@ def main() -> None:
         test_feed_staleness,
         test_per_quote_notional_cap,
         test_inventory_double_commit,
+        test_inventory_concurrent,
         test_inventory_released_at_deadline,
         test_per_window_cap_distinct_from_inventory,
         test_no_last_look,

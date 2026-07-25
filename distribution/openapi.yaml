@@ -376,6 +376,20 @@ components:
             Optional echo of the settlement contract the signature is bound to
             (the Permit2 `spender`). A signature is valid for exactly one
             deployed Spartan1 address and nowhere else.
+        settleable:
+          type: boolean
+          description: |
+            Whether this signed Order can actually settle on-chain. `false` means it was
+            signed against a PLACEHOLDER or DRY_RUN spender — `settle()` does not exist at
+            that address, so the order can NEVER settle and MUST NOT be forwarded for
+            execution. It exists only to exercise the loop in testing. A maker that binds
+            to a deployed Spartan1 address reports `true`.
+        dryRun:
+          type: boolean
+          description: Present only in DRY_RUN mode; always paired with `settleable: false`.
+        warning:
+          type: string
+          description: Human-readable note explaining why a non-settleable quote cannot settle.
 
     SigCheck:
       type: string
