@@ -1,0 +1,23 @@
+{
+  "name": "@spartan1/sdk",
+  "version": "0.1.0",
+  "description": "Spartan1 SDK — Order building, Permit2 witness signing, relay client. Constants are GENERATED from client/order.py (single source of truth), never retyped.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./constants": "./src/generated/constants.js"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "viem": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "viem": "^2.21.0",
+    "@types/node": "^22.0.0"
+  }
+}

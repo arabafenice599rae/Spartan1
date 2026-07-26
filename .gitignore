@@ -9,5 +9,8 @@ __pycache__/
 .venv/
 venv/
 
+# Node (SDK)
+node_modules/
+
 # Editor / OS
 .DS_Store
