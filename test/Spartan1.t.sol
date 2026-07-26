@@ -569,8 +569,13 @@ contract Spartan1Test is Test, DeployPermit2 {
 
     // ═══════════════════════ gate 10 — fork (skip-guarded) ══════════════════
 
-    /// Re-runs the delegated checks (expiry + over-pull) against REAL Permit2 on a fork.
-    /// Runs only when L2_RPC is set; otherwise skipped (reported, never green-by-omission).
+    /// The fork gate at its DECLARED meaning: tests 2 / 3 / 5 re-run against the REAL Permit2
+    /// singleton on a live-chain fork, plus one full SUCCESSFUL settle (the settlement proof the
+    /// off-chain suites cannot give), and — when the fork is Base (chainId 8453, the frozen
+    /// vector's chain) — a confirmation of the frozen canonical witness/digest against the real
+    /// DOMAIN_SEPARATOR. Runs only when L2_RPC is set; otherwise a declared SKIP.
+    ///
+    ///   L2_RPC=https://mainnet.base.org forge test --match-test gate10 -vvv
     function test_gate10_fork_realPermit2() public {
         string memory rpc = vm.envOr("L2_RPC", string(""));
         if (bytes(rpc).length == 0) {
@@ -578,36 +583,137 @@ contract Spartan1Test is Test, DeployPermit2 {
             vm.skip(true, "gate10 requires L2_RPC to run against real Permit2");
             return;
         }
+        // The setUp() instance must survive the fork swap: _digest() reads its ORDER_TYPEHASH.
+        vm.makePersistent(address(spartan));
         vm.createSelectFork(rpc);
-        // Re-deploy Spartan1 against the on-chain Permit2 already at the canonical address.
+        // Deploy Spartan1 against the on-chain Permit2 already at the canonical address.
         require(PERMIT2_ADDR.code.length > 0, "no Permit2 on fork");
         Spartan1 forked = new Spartan1(ISignatureTransfer(PERMIT2_ADDR));
         MockERC20 fsell = new MockERC20();
         MockERC20 fbuy = new MockERC20();
-        fsell.mint(maker, 10e18);
+        fsell.mint(maker, 100e18);
         vm.prank(maker);
         fsell.approve(PERMIT2_ADDR, type(uint256).max);
-        fbuy.mint(executor, 10_000e6);
+        fbuy.mint(executor, 1_000_000e6);
         vm.prank(executor);
         fbuy.approve(address(forked), type(uint256).max);
+        bytes32 ds = IPermit2Ext(PERMIT2_ADDR).DOMAIN_SEPARATOR();
 
+        // 0. Frozen-digest confirmation against the REAL domain separator. Only meaningful when
+        //    the fork's chainId is the vector's (Base, 8453): on any other chain the gate still
+        //    proves settlement, but NOT the frozen digest — the domain differs by construction.
+        if (block.chainid == VEC_CHAIN_ID) {
+            Spartan1.Order memory vec = Spartan1.Order({
+                maker: 0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7,
+                taker: address(0),
+                sellToken: 0x2222222222222222222222222222222222222222,
+                buyToken: 0x3333333333333333333333333333333333333333,
+                sellAmount: 1e18, buyAmount: 3000e6,
+                recipient: 0x4444444444444444444444444444444444444444,
+                maxTip: 1e16, fillWindow: 1900000000, deadline: 1900000045
+            });
+            assertEq(keccak256(abi.encode(forked.ORDER_TYPEHASH(), vec)), EXPECT_WITNESS,
+                "frozen witness != recomputed on fork");
+            assertEq(_digest(vec, VEC_NONCE, VEC_SPENDER, ds), EXPECT_DIGEST,
+                "frozen digest != real Permit2 DOMAIN_SEPARATOR on Base");
+        }
+
+        _fork2_expired(forked, fsell, fbuy, ds);
+        _fork3_overpull_then_settle(forked, fsell, fbuy, ds);
+        _fork5_codeless(forked, fsell, ds);
+    }
+
+    function _forkSign(Spartan1 forked, Spartan1.Order memory o, uint256 nonce, bytes32 ds)
+        internal
+        view
+        returns (bytes memory)
+    {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(MAKER_PK, _digest(o, nonce, address(forked), ds));
+        return abi.encodePacked(r, s, v);
+    }
+
+    /// Fork leg of test 2 — expired order against REAL Permit2: SignatureExpired, the unordered
+    /// nonce is NOT consumed, and no balance moves (invariant_expiredOrderNoStateChange).
+    function _fork2_expired(Spartan1 forked, MockERC20 fsell, MockERC20 fbuy, bytes32 ds) internal {
         Spartan1.Order memory o = Spartan1.Order({
             maker: maker, taker: address(0), sellToken: address(fsell), buyToken: address(fbuy),
             sellAmount: SELL, buyAmount: BUY, recipient: recipient, maxTip: TIP,
-            fillWindow: block.timestamp + 100, deadline: block.timestamp + 200
+            fillWindow: block.timestamp - 1, deadline: block.timestamp - 1
         });
-        bytes32 ds = IPermit2Ext(PERMIT2_ADDR).DOMAIN_SEPARATOR();
-        bytes32 witness = keccak256(abi.encode(forked.ORDER_TYPEHASH(), o));
-        bytes32 tpHash = keccak256(abi.encode(TOKEN_PERMISSIONS_TYPEHASH, o.sellToken, o.sellAmount + o.maxTip));
-        bytes32 typeHash = keccak256(abi.encodePacked(STUB, wts));
-        bytes32 structHash = keccak256(abi.encode(typeHash, tpHash, address(forked), uint256(20), o.deadline, witness));
-        bytes32 digest = keccak256(abi.encodePacked(hex"1901", ds, structHash));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(MAKER_PK, digest);
-        bytes memory sig = abi.encodePacked(r, s, v);
+        // Far keccak-derived nonce: the maker key is guessable (0xA11CE), so its REAL on-chain
+        // bitmap may not be virgin — compare before/after instead of assuming zero.
+        uint256 nonce = uint256(keccak256("spartan1.gate10.expired"));
+        bytes memory sig = _forkSign(forked, o, nonce, ds);
+        uint256 bitmapBefore = permit2.nonceBitmap(maker, nonce >> 8);
+        uint256 makerBefore = fsell.balanceOf(maker);
 
-        vm.warp(o.deadline + 1);
         vm.prank(executor);
         vm.expectRevert(abi.encodeWithSelector(SignatureExpired.selector, o.deadline));
-        forked.settle(o, SELL + TIP, 20, sig);
+        forked.settle(o, SELL + TIP, nonce, sig);
+
+        assertEq(permit2.nonceBitmap(maker, nonce >> 8), bitmapBefore, "fork2: nonce consumed on expiry");
+        assertEq(fsell.balanceOf(maker), makerBefore, "fork2: balance moved on expiry");
+    }
+
+    /// Fork leg of test 3 — over-pull against REAL Permit2 is InvalidAmount PRE-nonce (the order
+    /// is not burned), and the SAME order then settles successfully through Spartan1: this is the
+    /// settlement proof, with exact I6 deltas asserted on the fork.
+    function _fork3_overpull_then_settle(Spartan1 forked, MockERC20 fsell, MockERC20 fbuy, bytes32 ds)
+        internal
+    {
+        Spartan1.Order memory o = Spartan1.Order({
+            maker: maker, taker: address(0), sellToken: address(fsell), buyToken: address(fbuy),
+            sellAmount: SELL, buyAmount: BUY, recipient: recipient, maxTip: TIP,
+            fillWindow: block.timestamp, deadline: block.timestamp + 3600
+        });
+        uint256 nonce = uint256(keccak256("spartan1.gate10.overpull"));
+        bytes memory sig = _forkSign(forked, o, nonce, ds);
+        uint256 permitted = SELL + TIP;
+        uint256 bitmapBefore = permit2.nonceBitmap(maker, nonce >> 8);
+
+        // gate3 trap: cache the witness type string BEFORE expectRevert.
+        string memory cachedWts = wts;
+        bytes32 witness = keccak256(abi.encode(forked.ORDER_TYPEHASH(), o));
+        vm.expectRevert(abi.encodeWithSelector(InvalidAmount.selector, permitted));
+        permit2.permitWitnessTransferFrom(
+            ISignatureTransfer.PermitTransferFrom({
+                permitted: ISignatureTransfer.TokenPermissions({token: address(fsell), amount: permitted}),
+                nonce: nonce,
+                deadline: o.deadline
+            }),
+            ISignatureTransfer.SignatureTransferDetails({to: address(forked), requestedAmount: permitted + 1}),
+            maker,
+            witness,
+            cachedWts,
+            sig
+        );
+        assertEq(permit2.nonceBitmap(maker, nonce >> 8), bitmapBefore, "fork3: over-pull consumed the nonce");
+
+        // The order is still live — settle it for real. Exact deltas on both legs (I6), on fork.
+        uint256 execSellBefore = fsell.balanceOf(executor);
+        uint256 recBuyBefore = fbuy.balanceOf(recipient);
+        uint256 makerSellBefore = fsell.balanceOf(maker);
+        vm.prank(executor);
+        forked.settle(o, permitted, nonce, sig);
+        assertEq(fsell.balanceOf(executor) - execSellBefore, SELL + TIP, "fork3: taker leg delta");
+        assertEq(fbuy.balanceOf(recipient) - recBuyBefore, BUY, "fork3: recipient leg delta");
+        assertEq(makerSellBefore - fsell.balanceOf(maker), SELL + TIP, "fork3: maker paid exactly permitted");
+        assertEq(fsell.balanceOf(address(forked)), 0, "fork3: contract retained sellToken");
+        assertEq(fbuy.balanceOf(address(forked)), 0, "fork3: contract retained buyToken");
+    }
+
+    /// Fork leg of test 5 — codeless buyToken against REAL Permit2: the transfer reverts
+    /// TransferFromFailed (protection from the transfer, not I6), and the whole tx unwinds.
+    function _fork5_codeless(Spartan1 forked, MockERC20 fsell, bytes32 ds) internal {
+        Spartan1.Order memory o = Spartan1.Order({
+            maker: maker, taker: address(0), sellToken: address(fsell), buyToken: address(0xBEEF),
+            sellAmount: SELL, buyAmount: BUY, recipient: recipient, maxTip: TIP,
+            fillWindow: block.timestamp, deadline: block.timestamp + 3600
+        });
+        uint256 nonce = uint256(keccak256("spartan1.gate10.codeless"));
+        bytes memory sig = _forkSign(forked, o, nonce, ds);
+        vm.prank(executor);
+        vm.expectRevert(SafeTransferLib.TransferFromFailed.selector);
+        forked.settle(o, SELL + TIP, nonce, sig);
     }
 }
