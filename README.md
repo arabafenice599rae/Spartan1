@@ -368,7 +368,7 @@ spartan1/
 
 Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written before the contract), fork gate green, *then* the distribution layer against the proven Order shape.
 
-**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate + cross-leg coherence gate) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (13, incl. the drift + cross-language digest gates). The frozen literals are policed by `scripts/check_coherence.py` (every leg identical AND equal to recomputation from `client/order.py`), and deploy-day re-freezing is `scripts/refreeze_spender.py` (all legs atomically, placebo sentinels excluded, suites gated before and after). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
+**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate + cross-leg coherence gate) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (22, incl. the drift + cross-language digest gates and the dApp quote-guard gate — no security value may come from a relay). The frozen literals are policed by `scripts/check_coherence.py` (every leg identical AND equal to recomputation from `client/order.py`), and deploy-day re-freezing is `scripts/refreeze_spender.py` (all legs atomically, placebo sentinels excluded, suites gated before and after). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
 
 ---
 
@@ -392,7 +392,7 @@ python3 distribution/test_executor.py # executor conformance (26) + off-chain e2
 # sdk (constants generated, never retyped; drift + cross-language digest gates)
 cd sdk && npm install
 npm run typecheck                    # tsc --noEmit, strict
-npm test                             # node --test: 13 incl. byte-equality drift gate + frozen-digest gate
+npm test                             # node --test: 22 incl. drift gate, frozen-digest gate, dApp quote guard
 # the schema gate parses openapi.yaml; it needs pyyaml, else it SKIPs (declared, not a silent pass):
 pip install pyyaml
 ```

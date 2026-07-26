@@ -159,6 +159,28 @@ const witness = (o) => keccak256(encodeAbiParameters(
   [ORDER_TYPEHASH, ...orderTypeFields.map(({ name }) => o[name])],
 ));
 
+// ── BEGIN assertQuoteSafe (extracted verbatim by sdk/test/dapp-guard.test.ts — keep markers) ──
+/** MOTHER PRINCIPLE, enforced: NO security-critical value may come from a relay. A quote's
+ *  `to` and `allowanceTarget` are relay claims — both are already known locally (the configured
+ *  Spartan1), so a divergent claim is refused outright, and the flat taker-view fields must be
+ *  the exact inversion of the signed order (display integrity: what you see is what settles).
+ *  Without this, a hostile relay chains `allowanceTarget` (user approves its contract) with
+ *  `to` (settle() redirected there) into a taker-funds drain. Throws on any violation. */
+function assertQuoteSafe(q, configuredSpender) {
+  const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+  if (q.to !== undefined && !same(q.to, configuredSpender))
+    throw new Error(`relay 'to' (${q.to}) != configured Spartan1 — refused`);
+  if (q.allowanceTarget !== undefined && !same(q.allowanceTarget, configuredSpender))
+    throw new Error(`relay allowanceTarget (${q.allowanceTarget}) != configured Spartan1 — refused`);
+  if (!q.order || !q.nonce || !q.signature) throw new Error("quote missing settleable payload");
+  if (!same(q.sellToken, q.order.buyToken) || !same(q.buyToken, q.order.sellToken)
+      || String(q.sellAmount) !== String(q.order.buyAmount)
+      || String(q.buyAmount) !== String(q.order.sellAmount))
+    throw new Error("quote flat fields are not the inversion of the signed order — refused");
+  return true;
+}
+// ── END assertQuoteSafe ──
+
 let pendingOrder = null;
 let pendingQuote = null;
 
@@ -186,15 +208,22 @@ $("mSign").onclick = async () => {
     pendingOrder = buildMakerOrder(account);
     const h = witness(pendingOrder);
     $("orderhash").hidden = false;
-    $("orderhash").textContent = `Order hash (verify before signing): ${h}`;
+    $("orderhash").textContent =
+      `Order hash (verify before signing): ${h}\n` +
+      `fillWindow ${pendingOrder.fillWindow} (hot ${HOT_WINDOW}s) · ` +
+      `deadline ${pendingOrder.deadline} (expires in ${QUOTE_TTL}s)`;
     $("mSubmit").disabled = false;
-    $("mOut").textContent = "review the hash, then sign & fan out";
+    $("mOut").textContent = "review the hash and the expiry timestamps, then sign & fan out";
   } catch (e) { $("mOut").textContent = String(e); }
 };
 
 $("mSubmit").onclick = async () => {
   try {
     const { client, account } = await wallet();
+    const walletChain = await client.getChainId();
+    if (walletChain !== chainId())
+      throw new Error(`wallet is on chainId ${walletChain}, configured ${chainId()} — a signature ` +
+                      `for the wrong chain would be refused everywhere; fix the wallet network first`);
     const o = pendingOrder;
     const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
     const nonce = BigInt("0x" + [...nonceBytes].map((b) => b.toString(16).padStart(2, "0")).join(""));
@@ -233,20 +262,40 @@ $("tQuote").onclick = async () => {
       sellToken: $("tSell").value.trim(), buyToken: $("tBuy").value.trim(),
       buyAmount: $("tBuyAmt").value.trim(),
     });
+    const refused = [];
     for (const u of selectRelays(relays)) {
       const resp = await fetch(`${u}/quote?${q}`);
       if (resp.status !== 200) continue;            // 404 = not quoting; try the next relay
-      pendingQuote = await resp.json();
-      $("tSettle").disabled = false;
+      const candidate = await resp.json();
+      try {
+        assertQuoteSafe(candidate, spender());       // no security value from a relay, ever
+      } catch (err) {
+        refused.push(`${u}: ${err.message}`);
+        continue;                                    // hostile/broken relay → next one
+      }
+      pendingQuote = candidate;
+      // Recompute the order hash LOCALLY (anti-phishing, symmetric with the maker flow).
+      const o = candidate.order;
+      const localHash = witness(Object.fromEntries(orderTypeFields.map(({ name }) => [
+        name, ["sellAmount", "buyAmount", "maxTip", "fillWindow", "deadline"].includes(name)
+          ? BigInt(o[name]) : o[name],
+      ])));
+      const nonSettleable = candidate.settleable === false;
+      $("tSettle").disabled = nonSettleable;         // never enable settle on a placebo quote
       $("tOut").textContent =
-        `you pay     ${pendingQuote.sellAmount} of ${pendingQuote.sellToken}\n` +
-        `you receive ${pendingQuote.buyAmount} of ${pendingQuote.buyToken}\n` +
-        `order hash claim: ${pendingQuote.order ? "recompute locally before trusting" : "—"}\n` +
-        `allowanceTarget: ${pendingQuote.allowanceTarget} (approve exactly ${pendingQuote.sellAmount})` +
-        (pendingQuote.settleable === false ? "\n⚠ NON-SETTLEABLE quote (placeholder/DRY_RUN maker)." : "");
+        `you pay     ${candidate.sellAmount} of ${candidate.sellToken}\n` +
+        `you receive ${candidate.buyAmount} of ${candidate.buyToken}\n` +
+        `order hash (recomputed locally): ${localHash}\n` +
+        `fillWindow ${o.fillWindow} · deadline ${o.deadline} ` +
+        `(expires in ~${Math.max(0, o.deadline - Math.floor(Date.now() / 1000))}s)\n` +
+        `approve ${spender()} for exactly ${candidate.sellAmount} (the CONFIGURED Spartan1 — ` +
+        `never an address a relay supplies)` +
+        (nonSettleable ? "\n⚠ NON-SETTLEABLE quote (placeholder/DRY_RUN maker) — settle disabled." : "") +
+        (refused.length ? `\nrefused quotes: ${refused.join("; ")}` : "");
       return;
     }
-    $("tOut").textContent = "no relay is quoting this pair right now (404 — normal, not an error)";
+    $("tOut").textContent = (refused.length ? `refused quotes: ${refused.join("; ")}\n` : "")
+      + "no acceptable quote right now (404 = not quoting — normal, not an error)";
   } catch (e) { $("tOut").textContent = String(e); }
 };
 
@@ -254,6 +303,11 @@ $("tSettle").onclick = async () => {
   try {
     const { client, account } = await wallet();
     const q = pendingQuote;
+    assertQuoteSafe(q, spender());                   // defense in depth: re-check before funds move
+    if (q.settleable === false) throw new Error("non-settleable quote — refusing to settle");
+    const walletChain = await client.getChainId();
+    if (walletChain !== chainId())
+      throw new Error(`wallet is on chainId ${walletChain}, configured ${chainId()} — refused`);
     const o = q.order;
     const tuple = {
       maker: o.maker, taker: o.taker, sellToken: o.sellToken, buyToken: o.buyToken,
@@ -264,7 +318,9 @@ $("tSettle").onclick = async () => {
     const data = encodeFunctionData({ abi: SETTLE_ABI, functionName: "settle",
       args: [tuple, requested, BigInt(q.nonce), q.signature] });
     const hash = await client.sendTransaction({
-      account, chain: null, to: q.to ?? spender(), data,
+      // to = the CONFIGURED Spartan1, always. Never q.to: a relay must not choose where a
+      // transaction goes (mother principle) — assertQuoteSafe refuses a divergent claim anyway.
+      account, chain: null, to: spender(), data,
     });
     $("tOut").textContent += `\nsettle() tx: ${hash}`;
   } catch (e) { $("tOut").textContent += "\n" + String(e); }
