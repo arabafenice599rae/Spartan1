@@ -350,11 +350,12 @@ spartan1/
 │   ├── openapi.yaml          # single-source interface schema (layer SPOF)
 │   ├── relay.py              # stateless untrusted relay (P1–P7, RFQ fan-out, /health)
 │   ├── maker.py              # reference maker webhook: signs quotes, inventory reservation, guardrails ON, no last-look
-│   ├── executor.py           # poll-all-relays, orderHash dedup, bounded allowance, private RPC
+│   ├── executor.py           # poll-all-relays, taker guard, re-verify, simulate, dry-run by default
 │   ├── index.html            # dApp: sign once, transparent 8-relay fan-out, Order-hash display
 │   ├── relays.json           # public forkable relay list (convenience, not authority)
 │   ├── test_relay.py         # conformance gate: P1–P7 violated one by one, inversion, fan-out uniformity
-│   └── test_maker.py         # conformance gate: every guardrail violated, incl. inventory double-commit
+│   ├── test_maker.py         # conformance gate: every guardrail violated, incl. inventory double-commit
+│   └── test_executor.py      # conformance gate: every guardrail violated, incl. the taker guard; off-chain e2e
 ├── sdk/                      # TypeScript SDK — the witness type string lives here, CI-tested vs known digest
 ├── assets/                   # optional — logo.png / logo.svg (social preview, dApp)
 ├── foundry.toml              # Solady pinned to commit; Permit2 as immutable constructor arg
@@ -363,7 +364,7 @@ spartan1/
 
 Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written before the contract), fork gate green, *then* the distribution layer against the proven Order shape.
 
-**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus `distribution/` **partially** built — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, and the `test_relay.py` (96 assertions + an `openapi.yaml` schema-conformance gate) + `test_maker.py` (63 assertions) conformance gates. Still unbuilt: `distribution/executor.py`, `distribution/index.html`, `sdk/`, and `assets/`.
+**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus `distribution/` **partially** built — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, and the `test_relay.py` (96 assertions + an `openapi.yaml` schema-conformance gate) + `test_maker.py` (63 assertions) + `test_executor.py` (26 assertions) conformance gates. Still unbuilt: `distribution/index.html`, `sdk/`, and `assets/`.
 
 ---
 
@@ -382,6 +383,7 @@ python client/test_spartan1.py       # triple-digest harness must print the cano
 # distribution relay (stdlib only, reuses the signing core)
 python3 distribution/test_relay.py   # relay conformance (96) + openapi schema gate
 python3 distribution/test_maker.py   # maker conformance, 63 assertions
+python3 distribution/test_executor.py # executor conformance (26) + off-chain e2e (settlement is Foundry's job)
 # the schema gate parses openapi.yaml; it needs pyyaml, else it SKIPs (declared, not a silent pass):
 pip install pyyaml
 ```
@@ -408,7 +410,7 @@ No. Makers sign off-chain and pay zero gas; the executor submits the tx and pays
 Any standard ERC-20 via Permit2. Fee-on-transfer and rebasing tokens are *non-settleable by choice* — I6 reverts them rather than allow a silent loss.
 
 **Is it deployed or audited?**
-No — see "Is it safe to use in production?". This repository is the core (contract + gate + signing core); the distribution layer is Parte II, partially built: schema + relay + maker + conformance gates; `executor.py`, the dApp, and the SDK are not yet.
+No — see "Is it safe to use in production?". This repository is the core (contract + gate + signing core); the distribution layer is Parte II, partially built: schema + relay + maker + executor + conformance gates (the executor's off-chain loop is tested; on-chain settlement is still the open Foundry fork gate); the dApp and the SDK are not yet.
 
 ---
 
