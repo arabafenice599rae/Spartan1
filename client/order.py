@@ -153,7 +153,9 @@ def signing_digest(order: Order, nonce: int, spender: str, chain_id: int) -> byt
 def sign_order(order: Order, nonce: int, spender: str, chain_id: int, private_key) -> bytes:
     """Return a 65-byte EOA signature over the Permit2 witness digest."""
     digest = signing_digest(order, nonce, spender, chain_id)
-    signed = Account._sign_hash(digest, private_key)  # sign a precomputed 32-byte digest
+    # unsafe_sign_hash is the public API for signing a precomputed 32-byte digest;
+    # byte-identical to the legacy Account._sign_hash in the pinned eth-account 0.13.7.
+    signed = Account.unsafe_sign_hash(digest, private_key)
     return signed.signature
 
 

@@ -69,7 +69,7 @@ forge test                       # 21 passed; 1 skipped (gate 10 needs L2_RPC)
 forge test --fork-url $L2_RPC    # optional: run gate 10 against real Permit2
 
 # signing core: triple-digest harness (must reproduce the canonical digest)
-pip install eth-account eth-abi "eth-hash[pycryptodome]" web3
+pip install -r requirements.txt      # exact pins — supply-chain lock
 python client/test_spartan1.py
 ```
 
@@ -358,15 +358,20 @@ spartan1/
 │   └── test_executor.py      # conformance gate: every guardrail violated, incl. the taker guard; off-chain e2e
 ├── sdk/                      # TypeScript SDK — constants GENERATED from client/order.py (never retyped); digest-gated vs the frozen vector
 ├── scripts/
-│   └── gen_constants.py      # emits sdk/src/generated/constants.{ts,js}; the SDK drift test asserts byte equality
+│   ├── gen_constants.py      # emits sdk/src/generated/constants.{ts,js}; the SDK drift test asserts byte equality
+│   ├── check_coherence.py    # cross-leg gate: frozen literals identical in EVERY leg + equal to recomputation
+│   └── refreeze_spender.py   # deploy-day: rewrites all legs atomically (sentinels excluded), gates before+after
 ├── assets/                   # optional — logo.png / logo.svg (social preview, dApp)
+├── .github/workflows/ci.yml  # every gate on push/PR; gate 10 = declared SKIP, surfaced in the job summary
+├── requirements.txt          # exact Python pins (supply-chain lock)
+├── DEPLOY.md                 # deploy order: deploy -> refreeze_spender.py -> gate 10 -> audit
 ├── foundry.toml              # Solady pinned to commit; Permit2 as immutable constructor arg
 └── README.md
 ```
 
 Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written before the contract), fork gate green, *then* the distribution layer against the proven Order shape.
 
-**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (13, incl. the drift + cross-language digest gates). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
+**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate + cross-leg coherence gate) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (22, incl. the drift + cross-language digest gates and the dApp quote-guard gate — no security value may come from a relay). The frozen literals are policed by `scripts/check_coherence.py` (every leg identical AND equal to recomputation from `client/order.py`), and deploy-day re-freezing is `scripts/refreeze_spender.py` (all legs atomically, placebo sentinels excluded, suites gated before and after). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
 
 ---
 
@@ -378,24 +383,24 @@ forge build
 forge test                    # unit + fuzz + invariant
 forge test --fork-url $L2_RPC # gate tests 2/3/5/10 against real Permit2
 
-# signing core
-pip install eth-account eth-abi "eth-hash[pycryptodome]" web3
+# signing core (exact pins in requirements.txt — supply-chain lock; also covers pyyaml below)
+pip install -r requirements.txt
 python client/test_spartan1.py       # triple-digest harness must print the canonical digest
 
 # distribution relay (stdlib only, reuses the signing core)
-python3 distribution/test_relay.py   # relay conformance (96) + openapi schema gate
+python3 distribution/test_relay.py   # relay conformance (96) + openapi schema gate + cross-leg coherence gate
 python3 distribution/test_maker.py   # maker conformance, 63 assertions
 python3 distribution/test_executor.py # executor conformance (26) + off-chain e2e (settlement is Foundry's job)
 
 # sdk (constants generated, never retyped; drift + cross-language digest gates)
 cd sdk && npm install
 npm run typecheck                    # tsc --noEmit, strict
-npm test                             # node --test: 13 incl. byte-equality drift gate + frozen-digest gate
-# the schema gate parses openapi.yaml; it needs pyyaml, else it SKIPs (declared, not a silent pass):
-pip install pyyaml
+npm test                             # node --test: 22 incl. drift gate, frozen-digest gate, dApp quote guard
+# the schema gate parses openapi.yaml; it needs pyyaml (already pinned in requirements.txt),
+# else it SKIPs (declared, not a silent pass).
 ```
 
-CI enforces: `forge test` green · digest match (client == oracle == solidity) · schema conformance for every distribution component. Deployment is manual (`forge create`), never triggered by push. First chains: Base / Arbitrum (L2s with canonical Permit2).
+CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR: `forge test` · the triple-digest harness · the three distribution suites · the cross-leg coherence gate · SDK typecheck + tests. The on-chain fork gate (test 10) is a **declared SKIP** in CI — it needs an external L2 RPC (flaky, and buys nothing on a public repo) — and CI surfaces that skip in the job summary rather than hiding it behind a green badge. Deployment is manual (`forge create`), never triggered by push, and the full deploy-day order — deploy → `scripts/refreeze_spender.py` → gate 10 → audit — is in [DEPLOY.md](DEPLOY.md). First chains: Base / Arbitrum (L2s with canonical Permit2).
 
 ---
 

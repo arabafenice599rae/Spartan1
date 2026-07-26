@@ -1,0 +1,30 @@
+# Spartan1 — pinned Python dependencies (supply-chain lock).
+#
+# Exact versions proven green against the full off-chain test surface:
+#   client/test_spartan1.py · distribution/test_relay.py · distribution/test_maker.py
+#   · distribution/test_executor.py · scripts/check_coherence.py
+#
+# These pins ARE the mitigation for the parts of the signing stack with no public,
+# stable API surface — notably eth_account.Account._recover_hash (used by the relay
+# and maker verification path), which has no public equivalent in 0.13.7. Pin, don't
+# float. A version bump is a separate, gated change with a full re-run of every suite.
+#
+#   Install:  pip install -r requirements.txt
+
+# ── direct imports (client/order.py, distribution/*, scripts/*) ──────────────
+eth-account==0.13.7
+eth-abi==6.0.0b1          # NOTE: pre-release. It is the version that resolves green in
+                         # this environment; de-beta to a stable eth-abi is a separate,
+                         # gated change (re-run every suite + the frozen digest vector).
+eth-hash==0.8.0
+pycryptodome==3.23.0     # backend for eth-hash[pycryptodome] (keccak)
+eth-utils==6.0.0
+PyYAML==6.0.1            # openapi.yaml schema-conformance gate + cross-leg coherence gate
+
+# ── convenience / optional (referenced in docs; not imported by the core path) ─
+web3==7.16.0
+
+# ── transitive, pinned for a reproducible resolve ────────────────────────────
+eth-keys==0.7.0
+eth-typing==6.0.0
+parsimonious==0.10.0
