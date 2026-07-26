@@ -25,6 +25,15 @@ from eth_hash.auto import keccak
 # Canonical Permit2 singleton (same address on every chain).
 PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 
+# Anti-placebo sentinel — the "not deployed" spender. FROZEN at this value forever, on every
+# chain. It is DISTINCT from the canonical-vector spender used in the frozen test vector: that
+# one is the deployed Spartan1 address and MOVES to the real address on re-freeze, whereas this
+# sentinel never moves. Its whole job is the comparison `settleable = spartan1 != PLACEHOLDER_SPENDER`
+# — signing against it is useless on-chain (a signature bound to it can never settle), so every
+# component must refuse it loudly. (Today the vector spender happens to equal this value because
+# Spartan1 is not deployed yet; on deploy the vector moves and this stays put.)
+PLACEHOLDER_SPENDER = "0x1111111111111111111111111111111111111111"
+
 # Frozen — identical to Spartan1.ORDER_TYPEHASH's preimage.
 ORDER_TYPE = (
     "Order(address maker,address taker,address sellToken,address buyToken,"

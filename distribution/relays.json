@@ -6,11 +6,13 @@
     "This file lives in a forkable Git repo precisely so that no one controls it:",
     "fork it, edit it, ignore it. Total-censorship fallback: whoever holds a signed",
     "Order can call settle() directly on-chain and bypass every relay here.",
-    "Relays are NEVER paid — no fee, no reward, no token, permanent invariant."
+    "Relays are NEVER paid — no fee, no reward, no token, permanent invariant.",
+    "The deployed Spartan1 address is NOT here — an authoritative value has no place in a file",
+    "declared non-authoritative. It lives in deployments.json (the sole address authority)."
   ],
   "chains": {
-    "8453": { "spartan1": null, "relays": [] },
-    "42161": { "spartan1": null, "relays": [] }
+    "8453": { "relays": [] },
+    "42161": { "relays": [] }
   },
   "fanout": { "target": 8, "min": 3, "selection": "uniform-random" }
 }

@@ -38,8 +38,9 @@
 Every relay response shown here is a claim — the only authority is the signed Order plus on-chain <code>settle()</code>.</p>
 
 <div id="placebo">
-  ⚠ PLACEHOLDER SPENDER CONFIGURED — quotes signed against it can <u>NEVER</u> settle:
-  settle() does not exist at that address. Signing here is for TESTING ONLY.
+  ⚠ NO SETTLEABLE SPARTAN1 CONFIGURED — the address is the placeholder sentinel, empty, or the
+  zero address. Quotes signed against it can <u>NEVER</u> settle: settle() does not exist there.
+  Enter the deployed Spartan1 address (see distribution/deployments.json). Signing now is TESTING ONLY.
 </div>
 
 <fieldset>
@@ -135,9 +136,14 @@ const spender = () => $("spartan1").value.trim();
 const chainId = () => Number($("chainId").value.trim());
 const relayList = () => $("relays").value.split("\n").map((s) => s.trim()).filter(Boolean);
 
+const sameAddr = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+// A spender that can never settle: the placeholder sentinel, empty/unset, or the zero address.
+// The dApp must refuse null/unset as loudly as the placeholder (same banner, same settle-disable).
+const unsettleableSpender = (s) =>
+  !s || !/^0x[0-9a-fA-F]{40}$/.test(s) || sameAddr(s, PLACEHOLDER) || sameAddr(s, ZERO_ADDRESS);
+
 function refreshPlacebo() {
-  $("placebo").style.display =
-    spender().toLowerCase() === PLACEHOLDER.toLowerCase() ? "block" : "none";
+  $("placebo").style.display = unsettleableSpender(spender()) ? "block" : "none";
 }
 $("spartan1").addEventListener("input", refreshPlacebo);
 refreshPlacebo();
@@ -249,8 +255,8 @@ $("mSubmit").onclick = async () => {
       fetch(`${u}/order`, { method: "POST", headers: { "Content-Type": "application/json" }, body })));
     const ok = results.filter((r) => r.status === "fulfilled" && r.value.ok).length;
     $("mOut").textContent = `fan-out: ${ok}/${targets.length} relays accepted` +
-      (spender().toLowerCase() === PLACEHOLDER.toLowerCase()
-        ? "\n⚠ NON-SETTLEABLE: signed against the placeholder spender." : "");
+      (unsettleableSpender(spender())
+        ? "\n⚠ NON-SETTLEABLE: signed against a placeholder/unset/zero spender." : "");
   } catch (e) { $("mOut").textContent = String(e); }
 };
 

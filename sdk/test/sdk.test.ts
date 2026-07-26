@@ -30,6 +30,7 @@ import {
   ORDER_TYPE,
   ORDER_TYPEHASH,
   PERMIT2,
+  PLACEHOLDER_SPENDER,
   QUOTE_TTL,
   HOT_WINDOW,
   ZERO_ADDRESS,
@@ -150,10 +151,48 @@ test("frozen vector: signing digest matches (independent viem hashTypedData leg)
 });
 
 test("signOrder produces a 65-byte signature that recovers to the maker", async () => {
-  const sig = await signOrder(CANONICAL, NONCE, SPENDER, CHAIN_ID, MAKER_PK);
+  // The frozen-vector SPENDER IS the placeholder today (Spartan1 is not deployed), so this one
+  // call must opt in — every other caller gets the guard. See the placeholder-refusal tests below.
+  const sig = await signOrder(CANONICAL, NONCE, SPENDER, CHAIN_ID, MAKER_PK, { allowPlaceholder: true });
   assert.equal(sig.length, 2 + 65 * 2);
   const recovered = await recoverAddress({ hash: EXPECT_DIGEST as Hex, signature: sig });
   assert.equal(recovered.toLowerCase(), MAKER.toLowerCase());
+});
+
+// ── anti-placebo: the SDK is no longer the one component that signs the placeholder silently ──
+
+test("PLACEHOLDER_SPENDER is exported and frozen at 0x1111…1111", () => {
+  assert.equal(PLACEHOLDER_SPENDER, "0x1111111111111111111111111111111111111111");
+});
+
+test("signOrder REFUSES the placeholder spender without the opt-out", async () => {
+  await assert.rejects(
+    () => signOrder(CANONICAL, NONCE, PLACEHOLDER_SPENDER as Address, CHAIN_ID, MAKER_PK),
+    /placeholder spender/,
+  );
+});
+
+test("signOrder REFUSES an empty or zero-address spender as loudly as the placeholder", async () => {
+  await assert.rejects(
+    () => signOrder(CANONICAL, NONCE, "" as Address, CHAIN_ID, MAKER_PK),
+    /no configured Spartan1 address/,
+  );
+  await assert.rejects(
+    () => signOrder(CANONICAL, NONCE, ZERO_ADDRESS as Address, CHAIN_ID, MAKER_PK),
+    /no configured Spartan1 address/,
+  );
+});
+
+test("signOrder ACCEPTS a real (non-placeholder) deployed spender", async () => {
+  const deployed = "0x00000000000000000000000000000000DeaDBeef" as Address;
+  const sig = await signOrder(CANONICAL, NONCE, deployed, CHAIN_ID, MAKER_PK);
+  assert.equal(sig.length, 2 + 65 * 2);
+});
+
+test("signingDigest STAYS PURE — it still hashes the placeholder (frozen-vector verification)", () => {
+  // The guard is on signOrder, not signingDigest: the frozen digest is defined against the
+  // placeholder spender, so the pure hash path must keep reproducing it.
+  assert.equal(signingDigest(CANONICAL, NONCE, SPENDER, CHAIN_ID), EXPECT_DIGEST);
 });
 
 // ── tamper negatives: any single-input mutation must move the digest ──

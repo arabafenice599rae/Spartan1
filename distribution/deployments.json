@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "AUTHORITATIVE registry of deployed Spartan1 addresses, keyed by chain id.",
+    "Unlike relays.json (convenience, not authority), a value here is load-bearing: a wrong",
+    "address produces signatures that can never settle. So it is verified, not trusted.",
+    "VERIFICATION (a consumer MUST do this before trusting a value): confirm that code exists",
+    "at the address on the given chain (eth_getCode != 0x) AND that it is the audited Spartan1",
+    "bytecode / a verified source match. Only then sign against it.",
+    "Every value is null until the contract is deployed and the vector is re-frozen:",
+    "scripts/refreeze_spender.py writes the address here as part of the deploy-day flow, and the",
+    "coherence gate (scripts/check_coherence.py) asserts every non-null value equals the frozen",
+    "vector spender. null means NOT DEPLOYED - the SDK and dApp must refuse it as loudly as the",
+    "placeholder sentinel (a null/placeholder spender is unsettleable)."
+  ],
+  "chains": {
+    "8453": null,
+    "42161": null
+  }
+}
