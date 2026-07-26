@@ -690,6 +690,17 @@ def test_schema_conformance():
           set(resp_dry) <= signed_props, f"undeclared: {set(resp_dry) - signed_props}")
 
 
+def test_cross_leg_coherence():
+    print("\ncross-leg coherence — the frozen literals must be the SAME BYTES in every leg")
+    print("(each suite asserts its own literal; only this gate asserts they agree + match recomputation)")
+    import subprocess
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts",
+                          "check_coherence.py")
+    proc = subprocess.run([sys.executable, script], capture_output=True, text=True)
+    check("witness/digest/spender literals coherent across all legs (and == recomputed truth)",
+          proc.returncode == 0, "\n" + proc.stdout + proc.stderr)
+
+
 # ══════════════════════════════ runner ═══════════════════════════════════
 def main() -> None:
     print("Spartan1 relay — conformance gate (openapi.yaml is the reference)")
@@ -711,6 +722,7 @@ def main() -> None:
         test_relay_cannot_forge,
         test_unknown_routes,
         test_schema_conformance,
+        test_cross_leg_coherence,
     ):
         fn()
 

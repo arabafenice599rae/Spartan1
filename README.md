@@ -358,7 +358,9 @@ spartan1/
 │   └── test_executor.py      # conformance gate: every guardrail violated, incl. the taker guard; off-chain e2e
 ├── sdk/                      # TypeScript SDK — constants GENERATED from client/order.py (never retyped); digest-gated vs the frozen vector
 ├── scripts/
-│   └── gen_constants.py      # emits sdk/src/generated/constants.{ts,js}; the SDK drift test asserts byte equality
+│   ├── gen_constants.py      # emits sdk/src/generated/constants.{ts,js}; the SDK drift test asserts byte equality
+│   ├── check_coherence.py    # cross-leg gate: frozen literals identical in EVERY leg + equal to recomputation
+│   └── refreeze_spender.py   # deploy-day: rewrites all legs atomically (sentinels excluded), gates before+after
 ├── assets/                   # optional — logo.png / logo.svg (social preview, dApp)
 ├── foundry.toml              # Solady pinned to commit; Permit2 as immutable constructor arg
 └── README.md
@@ -366,7 +368,7 @@ spartan1/
 
 Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written before the contract), fork gate green, *then* the distribution layer against the proven Order shape.
 
-**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (13, incl. the drift + cross-language digest gates). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
+**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate + cross-leg coherence gate) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (13, incl. the drift + cross-language digest gates). The frozen literals are policed by `scripts/check_coherence.py` (every leg identical AND equal to recomputation from `client/order.py`), and deploy-day re-freezing is `scripts/refreeze_spender.py` (all legs atomically, placebo sentinels excluded, suites gated before and after). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
 
 ---
 
@@ -383,7 +385,7 @@ pip install eth-account eth-abi "eth-hash[pycryptodome]" web3
 python client/test_spartan1.py       # triple-digest harness must print the canonical digest
 
 # distribution relay (stdlib only, reuses the signing core)
-python3 distribution/test_relay.py   # relay conformance (96) + openapi schema gate
+python3 distribution/test_relay.py   # relay conformance (96) + openapi schema gate + cross-leg coherence gate
 python3 distribution/test_maker.py   # maker conformance, 63 assertions
 python3 distribution/test_executor.py # executor conformance (26) + off-chain e2e (settlement is Foundry's job)
 
