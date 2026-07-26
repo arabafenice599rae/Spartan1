@@ -1,0 +1,91 @@
+name: CI
+
+# Runs every gate the environment allows on push and PR. The ONE gate CI cannot run is the
+# on-chain fork gate (gate 10): it needs an external L2 RPC, which is flaky and buys nothing on a
+# public repo. It stays a DECLARED SKIP here and is surfaced in the job summary — never buried
+# behind a green badge. Run it manually before deploying capital (see DEPLOY.md).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with pinned submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive   # permit2 carries its own solmate submodule
+
+      - name: Install Foundry (pinned)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: "1.5.1"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned Python deps
+        run: pip install -r requirements.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # ── contract suite ─────────────────────────────────────────────────────
+      # Gate 10 is a declared SKIP without L2_RPC. Capture the summary and surface the skip
+      # explicitly; a never-run blocking gate must not read as a silent pass.
+      - name: forge test (gate 10 = declared SKIP)
+        run: |
+          set -o pipefail
+          forge test | tee forge.log
+          summary=$(grep -E '[0-9]+ tests? passed' forge.log | tail -1 || true)
+          {
+            echo "## Contract gate (forge test)"
+            echo ""
+            echo '```'
+            echo "${summary:-see job log}"
+            echo '```'
+            echo ""
+            echo "> **Gate 10 (\`test_gate10_fork_realPermit2\`) is a DECLARED SKIP in CI.**"
+            echo "> It forks a real L2 to run gates 2/3/5 + settlement against the canonical"
+            echo "> Permit2. No RPC secret is configured (flaky, and buys nothing on a public"
+            echo "> repo), so it does not run here. It is a hard precondition for deployment —"
+            echo "> run it manually per DEPLOY.md: \`L2_RPC=<base-rpc> forge test --match-test gate10\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── signing core + distribution suites ───────────────────────────────────
+      - name: client triple-digest harness (tamper on all 10 fields)
+        run: python3 client/test_spartan1.py
+
+      - name: relay conformance + schema + cross-leg coherence
+        run: python3 distribution/test_relay.py
+
+      - name: maker conformance
+        run: python3 distribution/test_maker.py
+
+      - name: executor conformance + off-chain e2e
+        run: python3 distribution/test_executor.py
+
+      - name: cross-leg coherence gate
+        run: python3 scripts/check_coherence.py
+
+      # ── SDK ──────────────────────────────────────────────────────────────────
+      - name: SDK install + typecheck + tests
+        working-directory: sdk
+        run: |
+          npm ci
+          npm run typecheck
+          npm test

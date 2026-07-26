@@ -69,7 +69,7 @@ forge test                       # 21 passed; 1 skipped (gate 10 needs L2_RPC)
 forge test --fork-url $L2_RPC    # optional: run gate 10 against real Permit2
 
 # signing core: triple-digest harness (must reproduce the canonical digest)
-pip install eth-account eth-abi "eth-hash[pycryptodome]" web3
+pip install -r requirements.txt      # exact pins — supply-chain lock
 python client/test_spartan1.py
 ```
 
@@ -362,6 +362,9 @@ spartan1/
 │   ├── check_coherence.py    # cross-leg gate: frozen literals identical in EVERY leg + equal to recomputation
 │   └── refreeze_spender.py   # deploy-day: rewrites all legs atomically (sentinels excluded), gates before+after
 ├── assets/                   # optional — logo.png / logo.svg (social preview, dApp)
+├── .github/workflows/ci.yml  # every gate on push/PR; gate 10 = declared SKIP, surfaced in the job summary
+├── requirements.txt          # exact Python pins (supply-chain lock)
+├── DEPLOY.md                 # deploy order: deploy -> refreeze_spender.py -> gate 10 -> audit
 ├── foundry.toml              # Solady pinned to commit; Permit2 as immutable constructor arg
 └── README.md
 ```
@@ -380,8 +383,8 @@ forge build
 forge test                    # unit + fuzz + invariant
 forge test --fork-url $L2_RPC # gate tests 2/3/5/10 against real Permit2
 
-# signing core
-pip install eth-account eth-abi "eth-hash[pycryptodome]" web3
+# signing core (exact pins in requirements.txt — supply-chain lock; also covers pyyaml below)
+pip install -r requirements.txt
 python client/test_spartan1.py       # triple-digest harness must print the canonical digest
 
 # distribution relay (stdlib only, reuses the signing core)
@@ -393,11 +396,11 @@ python3 distribution/test_executor.py # executor conformance (26) + off-chain e2
 cd sdk && npm install
 npm run typecheck                    # tsc --noEmit, strict
 npm test                             # node --test: 22 incl. drift gate, frozen-digest gate, dApp quote guard
-# the schema gate parses openapi.yaml; it needs pyyaml, else it SKIPs (declared, not a silent pass):
-pip install pyyaml
+# the schema gate parses openapi.yaml; it needs pyyaml (already pinned in requirements.txt),
+# else it SKIPs (declared, not a silent pass).
 ```
 
-CI enforces: `forge test` green · digest match (client == oracle == solidity) · schema conformance for every distribution component. Deployment is manual (`forge create`), never triggered by push. First chains: Base / Arbitrum (L2s with canonical Permit2).
+CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR: `forge test` · the triple-digest harness · the three distribution suites · the cross-leg coherence gate · SDK typecheck + tests. The on-chain fork gate (test 10) is a **declared SKIP** in CI — it needs an external L2 RPC (flaky, and buys nothing on a public repo) — and CI surfaces that skip in the job summary rather than hiding it behind a green badge. Deployment is manual (`forge create`), never triggered by push, and the full deploy-day order — deploy → `scripts/refreeze_spender.py` → gate 10 → audit — is in [DEPLOY.md](DEPLOY.md). First chains: Base / Arbitrum (L2s with canonical Permit2).
 
 ---
 

@@ -452,7 +452,7 @@ contract Spartan1Test is Test, DeployPermit2 {
 
     function test_gate5_codeless_EOA() public { _codelessReverts(address(0xBEEF)); }
     function test_gate5_codeless_precompile01() public { _codelessReverts(address(0x01)); }
-    function test_gate5_codeless_emptyAddress() public { _codelessReverts(address(0xdeadbeef)); }
+    function test_gate5_codeless_randomAddress() public { _codelessReverts(address(0xdeadbeef)); }
 
     // ═══════════════════════ gate 6 — fee-on-transfer ══════════════════════
 

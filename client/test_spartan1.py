@@ -158,17 +158,27 @@ def main() -> int:
     # 3. digest == frozen constant.
     check("digest == EXPECT_DIGEST", d_client == EXPECT_DIGEST)
 
-    # 4. negative tamper — flip one field, both witness and digest must move.
-    tampered = Order(**{**CANONICAL_ORDER.__dict__, "deadline": CANONICAL_ORDER.deadline + 1})
-    check(
-        "tamper(deadline+1) changes witness",
-        order_hash(tampered).hex() != order_hash(CANONICAL_ORDER).hex(),
-    )
-    check(
-        "tamper(deadline+1) changes digest",
-        signing_digest(tampered, NONCE, SPENDER, CHAIN_ID)
-        != signing_digest(CANONICAL_ORDER, NONCE, SPENDER, CHAIN_ID),
-    )
+    # 4. negative tamper — EVERY one of the ten Order fields must move BOTH the witness
+    #    and the digest. A field silently absent from the witness encoding (or from the
+    #    permit struct) would be an unsigned parameter — the M-06 / OIF failure class this
+    #    harness exists to catch. Address fields → a distinct valid address; uint fields → +1.
+    #    (test_relay.py and the SDK tamper several fields too; this tightens the canonical
+    #    harness itself so the single source of truth covers all ten in one place.)
+    ALT_ADDR = "0x5555555555555555555555555555555555555555"  # differs from every canonical field
+    base_w = order_hash(CANONICAL_ORDER).hex()
+    base_d = signing_digest(CANONICAL_ORDER, NONCE, SPENDER, CHAIN_ID)
+    ADDRESS_FIELDS = ("maker", "taker", "sellToken", "buyToken", "recipient")
+    UINT_FIELDS = ("sellAmount", "buyAmount", "maxTip", "fillWindow", "deadline")
+    for field in ADDRESS_FIELDS + UINT_FIELDS:
+        original = getattr(CANONICAL_ORDER, field)
+        new_val = ALT_ADDR if field in ADDRESS_FIELDS else original + 1
+        assert new_val != original, f"tamper value for {field} is not a change"
+        tampered = Order(**{**CANONICAL_ORDER.__dict__, field: new_val})
+        check(f"tamper({field}) changes witness", order_hash(tampered).hex() != base_w)
+        check(
+            f"tamper({field}) changes digest",
+            signing_digest(tampered, NONCE, SPENDER, CHAIN_ID) != base_d,
+        )
 
     print("RESULT:", "ALL GREEN" if ok else "FAILURES PRESENT")
     return 0 if ok else 1
