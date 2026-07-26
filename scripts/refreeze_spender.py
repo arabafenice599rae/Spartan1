@@ -24,6 +24,8 @@ recomputed and rewritten anyway as a no-op, so the flow has no special cases.
 
 from __future__ import annotations
 
+import datetime
+import json
 import os
 import re
 import shutil
@@ -37,7 +39,15 @@ sys.path.insert(0, HERE)
 
 from eth_utils import to_checksum_address  # via eth-account, already a dependency
 
-from check_coherence import ADDR, HEX64, SPEC, extract  # single source for the leg map
+# Single source for the leg map AND for the sentinel constant — never redefine the sentinel here:
+# a second copy that drifted would make this script misclassify a placeholder re-freeze as a release.
+from check_coherence import ADDR, FROZEN_SENTINEL, HEX64, SPEC, extract
+
+# Deploy-day monotonic artifacts (see the round-trip note in main()).
+CANONICAL_CHAIN = "8453"  # the frozen vector's chain (Base) — its deployment slot is what we set
+DEPLOYMENTS = os.path.join(ROOT, "distribution", "deployments.json")
+PACKAGE_JSON = os.path.join(ROOT, "sdk", "package.json")
+CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
 
 
 def compute_frozen(spender: str) -> tuple[str, str]:
@@ -117,6 +127,56 @@ def run_coherence() -> None:
         raise SystemExit("coherence gate red after re-freeze — tree left for inspection.")
 
 
+# ───────────────────── deploy-day monotonic artifacts (registry + release) ─────────────────────
+# deployments.json IS reversible (placeholder -> null); the SDK version + CHANGELOG are NOT — a
+# release cannot be un-released. So the round-trip byte-identity proof covers every signing leg AND
+# deployments.json, and EXCLUDES sdk/package.json + CHANGELOG.md (documented, not ambiguous).
+
+def _bumped_minor() -> str:
+    text = open(PACKAGE_JSON).read()
+    m = re.search(r'"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"', text)
+    if not m:
+        raise SystemExit("refreeze: cannot find a semver \"version\" in sdk/package.json")
+    return f"{int(m.group(1))}.{int(m.group(2)) + 1}.0"
+
+
+def write_deployment(address_or_none: str | None) -> None:
+    """Set deployments.json chains[CANONICAL_CHAIN] by a SURGICAL value swap (not json.dump, which
+    would reformat the file and break round-trip byte-identity). Preserves all other formatting."""
+    text = open(DEPLOYMENTS).read()
+    new_val = "null" if address_or_none is None else f'"{address_or_none}"'
+    pattern = r'("' + re.escape(CANONICAL_CHAIN) + r'"\s*:\s*)(null|"0x[0-9a-fA-F]{40}")'
+    new_text, n = re.subn(pattern, r"\g<1>" + new_val.replace("\\", "\\\\"), text, count=1)
+    if n != 1:
+        raise SystemExit(f"deployments.json: could not find chain {CANONICAL_CHAIN} value to set")
+    # Sanity: the result must still parse and carry the intended value.
+    if json.loads(new_text)["chains"][CANONICAL_CHAIN] != address_or_none:
+        raise SystemExit("deployments.json: surgical write produced an unexpected value")
+    open(DEPLOYMENTS, "w").write(new_text)
+
+
+def bump_sdk_version(new_version: str) -> None:
+    text = open(PACKAGE_JSON).read()
+    text = re.sub(r'("version"\s*:\s*")\d+\.\d+\.\d+(")', r"\g<1>" + new_version + r"\g<2>", text, count=1)
+    open(PACKAGE_JSON, "w").write(text)
+
+
+def prepend_changelog(new_version: str, address: str, today: str) -> None:
+    text = open(CHANGELOG).read()
+    entry = (
+        f"## [{new_version}] — {today}\n\n"
+        f"- Chain {CANONICAL_CHAIN}: Spartan1 deployed at `{address}`; canonical vector re-frozen "
+        f"against it. `distribution/deployments.json` updated; verify code exists on-chain before "
+        f"trusting.\n\n"
+    )
+    marker = "\n## ["  # insert before the first existing release section
+    idx = text.find(marker)
+    if idx == -1:
+        raise SystemExit("refreeze: CHANGELOG.md has no '## [' release section to prepend before")
+    insert_at = idx + 1  # keep the leading newline attached to the following section
+    open(CHANGELOG, "w").write(text[:insert_at] + entry + text[insert_at:])
+
+
 def main() -> None:
     args = [a for a in sys.argv[1:]]
     check_only = "--check" in args
@@ -136,7 +196,24 @@ def main() -> None:
     print(f"  {len(plan)} leg rewrites" + (" (CHECK MODE — nothing written):" if check_only else ":"))
     for rel, kind, old, new in plan:
         print(f"    {rel:35} {kind:14} {old} -> {new}")
-    print("  sentinel legs (maker.py PLACEHOLDER_SPENDER, index.html PLACEHOLDER): NEVER touched.")
+    print("  sentinel legs (order.py + maker.py PLACEHOLDER_SPENDER, index.html PLACEHOLDER, "
+          "sdk constants): NEVER touched.")
+
+    # Deploy-day artifacts. A real deploy (target != the placeholder sentinel) is a release: write
+    # the address into the registry, bump the SDK minor, prepend a CHANGELOG entry. Re-freezing back
+    # TO the placeholder (e.g. the round-trip proof) sets the registry slot null and is NOT a release.
+    is_release = new_spender.lower() != FROZEN_SENTINEL.lower()
+    deploy_value = new_spender if is_release else None
+    if is_release:
+        new_version = _bumped_minor()
+        print(f"  registry: deployments.json chains[{CANONICAL_CHAIN}] -> {new_spender}")
+        print(f"  release : sdk/package.json version -> {new_version}; CHANGELOG.md += entry "
+              f"(monotonic — excluded from round-trip identity)")
+    else:
+        new_version = None
+        print(f"  registry: deployments.json chains[{CANONICAL_CHAIN}] -> null (placeholder = not deployed)")
+        print("  release : none (re-freeze to placeholder is not a release)")
+
     if check_only:
         return
 
@@ -144,9 +221,14 @@ def main() -> None:
     apply_rewrites(plan)
     subprocess.run([sys.executable, os.path.join(HERE, "gen_constants.py")], check=True,
                    capture_output=True)
+    write_deployment(deploy_value)
+    if is_release:
+        bump_sdk_version(new_version)
+        # datetime is fine here — this is a real deploy-time script, not a deterministic gate.
+        prepend_changelog(new_version, new_spender, datetime.date.today().isoformat())
     run_coherence()
     run_suites("post-re-freeze — every leg re-proven")
-    print("RE-FREEZE COMPLETE: all legs rewritten, coherence + all suites green.")
+    print("RE-FREEZE COMPLETE: all legs rewritten, registry updated, coherence + all suites green.")
 
 
 if __name__ == "__main__":

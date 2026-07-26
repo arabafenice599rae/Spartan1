@@ -270,6 +270,8 @@ Per-identity costs (bonds, PoW, uptime history) are **deliberately excluded**: w
 
 Uniform-random selection is also what makes relay participation *structurally* democratic: every relay — new or old, big or small — has equal probability per order. `relays.json` lives in a forkable Git repo (convenience, not authority; inclusion verifies only that a relay is *real*, never who runs it), and a client-local list always takes precedence. **Total censorship fallback:** whoever holds a signed Order can call `settle()` directly on-chain, bypassing every relay.
 
+The deployed Spartan1 address is the opposite of convenience: it is **authoritative** — a wrong value produces signatures that can never settle. So it does not live in `relays.json`; it lives in `distribution/deployments.json` (chainId → address, `null` until deployed), which a consumer must verify on-chain (`eth_getCode != 0x`, matching the audited bytecode) before trusting. Every component refuses a `null`/placeholder/zero spender as loudly as it refuses a bad quote: the SDK's `signOrder` throws, the dApp shows the non-settleable banner and disables `settle`. The coherence gate asserts every non-null registry value equals the frozen vector spender; `scripts/refreeze_spender.py` writes it on deploy day.
+
 ---
 
 ## Wallet & aggregator integration
@@ -353,17 +355,19 @@ spartan1/
 │   ├── executor.py           # poll-all-relays, taker guard, re-verify, simulate, dry-run by default
 │   ├── index.html            # dApp: sign once, transparent 8-relay fan-out, Order-hash display
 │   ├── relays.json           # public forkable relay list (convenience, not authority)
+│   ├── deployments.json      # AUTHORITATIVE per-chain Spartan1 address registry (null until deployed; verify on-chain)
 │   ├── test_relay.py         # conformance gate: P1–P7 violated one by one, inversion, fan-out uniformity
 │   ├── test_maker.py         # conformance gate: every guardrail violated, incl. inventory double-commit
 │   └── test_executor.py      # conformance gate: every guardrail violated, incl. the taker guard; off-chain e2e
 ├── sdk/                      # TypeScript SDK — constants GENERATED from client/order.py (never retyped); digest-gated vs the frozen vector
 ├── scripts/
 │   ├── gen_constants.py      # emits sdk/src/generated/constants.{ts,js}; the SDK drift test asserts byte equality
-│   ├── check_coherence.py    # cross-leg gate: frozen literals identical in EVERY leg + equal to recomputation
-│   └── refreeze_spender.py   # deploy-day: rewrites all legs atomically (sentinels excluded), gates before+after
+│   ├── check_coherence.py    # cross-leg gate: frozen literals identical in EVERY leg + equal to recomputation; validates deployments.json
+│   └── refreeze_spender.py   # deploy-day: rewrites all legs atomically (sentinels excluded), writes deployments.json, bumps SDK version, gates before+after
 ├── assets/                   # optional — logo.png / logo.svg (social preview, dApp)
 ├── .github/workflows/ci.yml  # every gate on push/PR; gate 10 = declared SKIP, surfaced in the job summary
 ├── requirements.txt          # exact Python pins (supply-chain lock)
+├── CHANGELOG.md              # SDK release history (refreeze prepends an entry on deploy)
 ├── DEPLOY.md                 # deploy order: deploy -> refreeze_spender.py -> gate 10 -> audit
 ├── foundry.toml              # Solady pinned to commit; Permit2 as immutable constructor arg
 └── README.md
@@ -371,7 +375,7 @@ spartan1/
 
 Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written before the contract), fork gate green, *then* the distribution layer against the proven Order shape.
 
-**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate + cross-leg coherence gate) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (22, incl. the drift + cross-language digest gates and the dApp quote-guard gate — no security value may come from a relay). The frozen literals are policed by `scripts/check_coherence.py` (every leg identical AND equal to recomputation from `client/order.py`), and deploy-day re-freezing is `scripts/refreeze_spender.py` (all legs atomically, placebo sentinels excluded, suites gated before and after). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
+**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `deployments.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate + cross-leg coherence gate + the gate's own exit-code self-test) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (27, incl. the drift + cross-language digest gates, the dApp quote-guard gate — no security value may come from a relay — and the anti-placebo `signOrder` guard). The anti-placebo sentinel `PLACEHOLDER_SPENDER` is now enforced in **every** component (maker, dApp, and the SDK — which used to accept it silently): a signature bound to the placeholder/null/zero spender can never settle, so each refuses it loudly. The frozen literals + the sentinel (5 legs, `client/order.py` — the single source — included) + `deployments.json` are policed by `scripts/check_coherence.py` (every leg identical AND equal to recomputation from `client/order.py`; a divergence exits non-zero, and the relay suite self-tests that exit code), and deploy-day re-freezing is `scripts/refreeze_spender.py` (all legs atomically, sentinels excluded, writes `deployments.json`, bumps the SDK version + `CHANGELOG.md`, suites gated before and after). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
 
 ---
 

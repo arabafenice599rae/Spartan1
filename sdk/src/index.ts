@@ -29,6 +29,7 @@ import {
   PERMIT2,
   PERMIT2_HASHED_NAME,
   PERMIT_WITNESS_TYPEHASH,
+  PLACEHOLDER_SPENDER,
   TOKEN_PERMISSIONS_TYPEHASH,
   ZERO_ADDRESS,
   QUOTE_TTL,
@@ -198,10 +199,40 @@ export function randomNonce(): bigint {
   return BigInt("0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""));
 }
 
-/** Sign the Permit2 witness digest with an EOA key. Returns the 65-byte r‖s‖v signature. */
+/** Case-insensitive address equality (EIP-55 checksums vs lowercase). The SDK has no other
+ *  address helper; this mirrors the dApp's `same()` in distribution/index.html. */
+export function sameAddress(a: string | null | undefined, b: string | null | undefined): boolean {
+  return typeof a === "string" && typeof b === "string" &&
+    a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Sign the Permit2 witness digest with an EOA key. Returns the 65-byte r‖s‖v signature.
+ *
+ * Unlike `signingDigest` (which stays pure — hashing the placeholder is exactly how the frozen
+ * vector is verified), the SIGNING path refuses a spender that can never settle: an unset/empty/
+ * zero address, or the anti-placebo `PLACEHOLDER_SPENDER` sentinel. A signature bound to the
+ * placeholder is dead on-chain, and the SDK is the only component that used to accept it silently.
+ * The `allowPlaceholder` opt-out exists ONLY for the frozen-vector test (whose canonical spender is
+ * the placeholder today); it is named so no integrator enables it by accident.
+ */
 export async function signOrder(
   o: Order, nonce: bigint, spender: Address, chainId: number, privateKey: Hex,
+  opts: { allowPlaceholder?: boolean } = {},
 ): Promise<Hex> {
+  if (!spender || !/^0x[0-9a-fA-F]{40}$/.test(spender) || sameAddress(spender, ZERO_ADDRESS)) {
+    throw new Error(
+      "signOrder: no configured Spartan1 address (spender is empty/zero) — a signature would be " +
+      "unsettleable; supply the deployed Spartan1 address (see distribution/deployments.json).",
+    );
+  }
+  if (sameAddress(spender, PLACEHOLDER_SPENDER) && !opts.allowPlaceholder) {
+    throw new Error(
+      "signOrder: refusing the placeholder spender " + PLACEHOLDER_SPENDER + " — a signature bound " +
+      "to it can NEVER settle. Use the deployed Spartan1 address; pass { allowPlaceholder: true } " +
+      "only in tests that assert against the frozen vector.",
+    );
+  }
   const account = privateKeyToAccount(privateKey);
   return account.sign({ hash: signingDigest(o, nonce, spender, chainId) });
 }

@@ -63,6 +63,9 @@ def constants() -> list[tuple[str, str, str]]:
          "Canonical Permit2 singleton (same address on every chain)."),
         ("ZERO_ADDRESS", repr_js("0x" + "00" * 20),
          "address(0) — an open order's taker."),
+        ("PLACEHOLDER_SPENDER", repr_js(O.PLACEHOLDER_SPENDER),
+         "Anti-placebo sentinel (frozen forever). signOrder refuses it: a signature bound to it "
+         "can never settle. Distinct from the deployed spender, which moves on re-freeze."),
         ("ORDER_TYPE", repr_js(O.ORDER_TYPE),
          "EIP-712 Order type string. Field order is frozen; reordering kills every signature."),
         ("ORDER_TYPEHASH", repr_js(_hex(O.ORDER_TYPEHASH)),

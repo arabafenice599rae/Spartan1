@@ -63,8 +63,10 @@ tree.
 python3 scripts/refreeze_spender.py --check "$SPARTAN1"
 ```
 
-It prints the recomputed witness/digest and every leg it would rewrite. Read it. Confirm the leg
-count and that only vector legs appear.
+It prints the recomputed witness/digest, every leg it would rewrite, and the deploy-day artifacts it
+would write (the `deployments.json` slot, the SDK version bump, the `CHANGELOG.md` entry). Read it.
+Confirm the leg count, that only vector legs appear, and that the sentinel legs are listed as never
+touched.
 
 **Then write:**
 
@@ -77,7 +79,17 @@ In write mode the script:
 2. Rewrites the **five vector-spender legs** and the **four frozen-digest legs** (the witness is
    spender-independent; it is recomputed and rewritten as a no-op so the flow has no special cases).
 3. Regenerates `sdk/src/generated/constants.{ts,js}` from `client/order.py`.
-4. Re-runs the coherence gate + every suite, and aborts (leaving the tree for inspection) on any red.
+4. Writes `distribution/deployments.json` `chains[8453] = "$SPARTAN1"` (the authoritative registry;
+   the coherence gate then asserts it equals the frozen vector spender).
+5. Bumps the SDK minor version in `sdk/package.json` and PREPENDS a `CHANGELOG.md` entry naming the
+   chain that gained an address. These two are intentionally **monotonic** — a release is not
+   reversible, so they are the one documented exclusion from the re-freeze round-trip identity (every
+   signing leg and `deployments.json` ARE round-trip byte-identical; the version and changelog are not).
+6. Re-runs the coherence gate + every suite, and aborts (leaving the tree for inspection) on any red.
+
+The sentinel legs — `PLACEHOLDER_SPENDER` in `maker.py`, `PLACEHOLDER` in `index.html`, and the
+generated `PLACEHOLDER_SPENDER` in the SDK constants — are NEVER rewritten (the coherence gate pins
+them to `0x1111…1111` forever; rewriting them would invert the anti-placebo guard).
 
 > **chainId note.** The vector is frozen for Base (8453). Deploying to a different chain means the
 > digest changes with `chainId` too; re-freezing the spender alone is not enough. Re-freeze against

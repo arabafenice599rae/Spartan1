@@ -9,6 +9,9 @@ export const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 /** address(0) — an open order's taker. */
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
+/** Anti-placebo sentinel (frozen forever). signOrder refuses it: a signature bound to it can never settle. Distinct from the deployed spender, which moves on re-freeze. */
+export const PLACEHOLDER_SPENDER = "0x1111111111111111111111111111111111111111";
+
 /** EIP-712 Order type string. Field order is frozen; reordering kills every signature. */
 export const ORDER_TYPE = "Order(address maker,address taker,address sellToken,address buyToken,uint256 sellAmount,uint256 buyAmount,address recipient,uint256 maxTip,uint256 fillWindow,uint256 deadline)";
 
