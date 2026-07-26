@@ -22,10 +22,12 @@ USAGE (from repo root, in CI):
   {test_gate10_fork_realPermit2} — an EXTRA skip or a MISSING gate 10 (removed/renamed → empty
   set) both fail. Also fails on any non-Success/non-Skipped test. Writes the authoritative
   contract-gate summary to $GITHUB_STEP_SUMMARY when that env var is set.
-- positional args: python suite files. Each is run; it must exit 0 AND its `RESULT:` summary
-  line must not report a skip. (We anchor to the `^RESULT` line on purpose: a suite may print
-  the word "skipped" inside a test *description* — e.g. the executor's "(mute relay skipped)" —
-  which must not trip the gate.)
+- positional args: python suite files (AT LEAST ONE is required — the script refuses to report
+  OK over an empty suite list, so a workflow edit that silently drops the paths fails loudly
+  instead of passing vacuously). Each is run; it must exit 0 AND its `RESULT:` summary line must
+  not report a skip. (We anchor to the `^RESULT` line on purpose: a suite may print the word
+  "skipped" inside a test *description* — e.g. the executor's "(mute relay skipped)" — which must
+  not trip the gate.)
 
 Exit 0 only if every check passes; otherwise print every violation and exit 1.
 """
@@ -129,6 +131,13 @@ def main() -> int:
     ap.add_argument("--forge", help="path to a `forge test --json` dump")
     ap.add_argument("suites", nargs="*", help="python suite files that must run with no skips")
     args = ap.parse_args()
+
+    # Refuse to report OK over nothing. `suites` is nargs="*", so an invocation that lost its suite
+    # paths — e.g. a future workflow edit dropping the `\` line-continuation — would otherwise print
+    # "skip gate OK" and exit 0 while checking nothing on the Python side. That silent-green shape is
+    # the very failure this gate exists to prevent, so make it loud instead.
+    if not args.suites:
+        ap.error("no suites given — refusing to report OK over nothing (pass the conformance suites)")
 
     violations: list[str] = []
     if args.forge:
