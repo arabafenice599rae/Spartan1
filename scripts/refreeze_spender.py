@@ -39,10 +39,11 @@ sys.path.insert(0, HERE)
 
 from eth_utils import to_checksum_address  # via eth-account, already a dependency
 
-from check_coherence import ADDR, HEX64, SPEC, extract  # single source for the leg map
+# Single source for the leg map AND for the sentinel constant — never redefine the sentinel here:
+# a second copy that drifted would make this script misclassify a placeholder re-freeze as a release.
+from check_coherence import ADDR, FROZEN_SENTINEL, HEX64, SPEC, extract
 
 # Deploy-day monotonic artifacts (see the round-trip note in main()).
-FROZEN_SENTINEL = "0x1111111111111111111111111111111111111111"
 CANONICAL_CHAIN = "8453"  # the frozen vector's chain (Base) — its deployment slot is what we set
 DEPLOYMENTS = os.path.join(ROOT, "distribution", "deployments.json")
 PACKAGE_JSON = os.path.join(ROOT, "sdk", "package.json")
@@ -195,8 +196,8 @@ def main() -> None:
     print(f"  {len(plan)} leg rewrites" + (" (CHECK MODE — nothing written):" if check_only else ":"))
     for rel, kind, old, new in plan:
         print(f"    {rel:35} {kind:14} {old} -> {new}")
-    print("  sentinel legs (maker.py PLACEHOLDER_SPENDER, index.html PLACEHOLDER, sdk constants): "
-          "NEVER touched.")
+    print("  sentinel legs (order.py + maker.py PLACEHOLDER_SPENDER, index.html PLACEHOLDER, "
+          "sdk constants): NEVER touched.")
 
     # Deploy-day artifacts. A real deploy (target != the placeholder sentinel) is a release: write
     # the address into the registry, bump the SDK minor, prepend a CHANGELOG entry. Re-freezing back

@@ -701,6 +701,50 @@ def test_cross_leg_coherence():
           proc.returncode == 0, "\n" + proc.stdout + proc.stderr)
 
 
+def test_coherence_gate_exits_nonzero_on_divergent_sentinel():
+    """The gate must FAIL, not merely report. Both consumers key off the EXIT CODE — this suite
+    (returncode == 0 above) and the CI step — so a refactor that turned a `problems.append` into a
+    bare `print` would leave a gate that narrates a broken sentinel while the build stays green.
+    Hermetic: monkeypatches extract() in memory, mutates no file, then restores."""
+    print("\ncoherence gate self-test — a divergent placebo sentinel must EXIT NON-ZERO")
+    scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
+    sys.path.insert(0, scripts_dir)
+    import io
+    from contextlib import redirect_stdout
+
+    import check_coherence as C
+
+    original = C.extract
+    try:
+        def divergent():
+            found, errors = original()
+            # One derived leg moves off the frozen sentinel; every other leg stays put.
+            found["sentinel"] = [
+                (f, "0x2222222222222222222222222222222222222222" if i == 0 else v)
+                for i, (f, v) in enumerate(found["sentinel"])
+            ]
+            return found, errors
+
+        C.extract = divergent
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = C.main()
+        out = buf.getvalue()
+        check("divergent sentinel -> exit code 1 (fails the build, not just the log)", rc == 1,
+              f"returned {rc}\n{out}")
+        check("...and the failure names the divergent leg", "INCOHERENT" in out, out)
+
+        # Control: with extract() restored the very same call path must exit 0, so the assertion
+        # above cannot pass for an unrelated reason (a gate that always fails proves nothing).
+        C.extract = original
+        buf2 = io.StringIO()
+        with redirect_stdout(buf2):
+            rc_ok = C.main()
+        check("control: unmodified tree -> exit code 0", rc_ok == 0, f"returned {rc_ok}\n{buf2.getvalue()}")
+    finally:
+        C.extract = original
+
+
 # ══════════════════════════════ runner ═══════════════════════════════════
 def main() -> None:
     print("Spartan1 relay — conformance gate (openapi.yaml is the reference)")
@@ -723,6 +767,7 @@ def main() -> None:
         test_unknown_routes,
         test_schema_conformance,
         test_cross_leg_coherence,
+        test_coherence_gate_exits_nonzero_on_divergent_sentinel,
     ):
         fn()
 
