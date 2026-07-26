@@ -2,8 +2,10 @@ name: CI
 
 # Runs every gate the environment allows on push and PR. The ONE gate CI cannot run is the
 # on-chain fork gate (gate 10): it needs an external L2 RPC, which is flaky and buys nothing on a
-# public repo. It stays a DECLARED SKIP here and is surfaced in the job summary — never buried
-# behind a green badge. Run it manually before deploying capital (see DEPLOY.md).
+# public repo. It stays a DECLARED SKIP here — and the "enforce" step below makes gate 10 the ONLY
+# permitted skip in all of CI: any other skip (e.g. the relay schema/coherence gates going quiet
+# because pyyaml failed to resolve) fails the job. A green badge must never hide a gate that did
+# not run. Run gate 10 manually before deploying capital (see DEPLOY.md).
 
 on:
   push:
@@ -45,28 +47,12 @@ jobs:
           node-version: "22"
 
       # ── contract suite ─────────────────────────────────────────────────────
-      # Gate 10 is a declared SKIP without L2_RPC. Capture the summary and surface the skip
-      # explicitly; a never-run blocking gate must not read as a silent pass.
-      - name: forge test (gate 10 = declared SKIP)
-        run: |
-          set -o pipefail
-          forge test | tee forge.log
-          summary=$(grep -E '[0-9]+ tests? passed' forge.log | tail -1 || true)
-          {
-            echo "## Contract gate (forge test)"
-            echo ""
-            echo '```'
-            echo "${summary:-see job log}"
-            echo '```'
-            echo ""
-            echo "> **Gate 10 (\`test_gate10_fork_realPermit2\`) is a DECLARED SKIP in CI.**"
-            echo "> It forks a real L2 to run gates 2/3/5 + settlement against the canonical"
-            echo "> Permit2. No RPC secret is configured (flaky, and buys nothing on a public"
-            echo "> repo), so it does not run here. It is a hard precondition for deployment —"
-            echo "> run it manually per DEPLOY.md: \`L2_RPC=<base-rpc> forge test --match-test gate10\`."
-          } >> "$GITHUB_STEP_SUMMARY"
+      # JSON output feeds the skip-enforcement step below (it binds the one allowed skip to gate
+      # 10 by NAME). A real test failure fails the job right here.
+      - name: forge test (JSON for skip enforcement)
+        run: forge test --json > forge.json
 
-      # ── signing core + distribution suites ───────────────────────────────────
+      # ── signing core + distribution suites (per-suite status) ────────────────
       - name: client triple-digest harness (tamper on all 10 fields)
         run: python3 client/test_spartan1.py
 
@@ -82,10 +68,23 @@ jobs:
       - name: cross-leg coherence gate
         run: python3 scripts/check_coherence.py
 
+      # ── the enforcement gate: gate 10 is the ONLY skip permitted anywhere ─────
+      # Fails if forge skipped anything other than gate 10 (or is missing gate 10), or if any
+      # Python conformance suite reported a skip in its RESULT line (e.g. pyyaml unresolved →
+      # schema/coherence gates silently disabled). Also writes the authoritative contract-gate
+      # summary to $GITHUB_STEP_SUMMARY.
+      - name: enforce — gate 10 is the ONLY skip anywhere in CI
+        run: |
+          python3 scripts/ci_no_unexpected_skips.py --forge forge.json \
+            client/test_spartan1.py distribution/test_relay.py \
+            distribution/test_maker.py distribution/test_executor.py
+
       # ── SDK ──────────────────────────────────────────────────────────────────
-      - name: SDK install + typecheck + tests
+      - name: SDK install + typecheck + tests (no silent test.skip)
         working-directory: sdk
         run: |
+          set -o pipefail
           npm ci
           npm run typecheck
-          npm test
+          npm test | tee sdk.log
+          grep -q '^# skipped 0$' sdk.log || { echo "::error::SDK reported skipped tests"; exit 1; }
