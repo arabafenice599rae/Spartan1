@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spartan1 — exact settlement, nothing else</title>
+<!--
+  Spartan1 reference dApp. Single file, NO build step, no analytics, no external fonts,
+  no tracking. Constants are imported from the GENERATED ../sdk/src/generated/constants.js
+  (single source: client/order.py) — never retyped here. viem comes from a version-pinned
+  ESM CDN; the pin matches sdk/package-lock.json.
+
+  ANTI-PLACEBO RULE (same as maker.py's settleable:false): when the configured spender is
+  the placeholder 0x1111…1111, a banner states that quotes signed against it can NEVER
+  settle — settle() does not exist at that address. No silent default.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         max-width: 60rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { letter-spacing: .35em; font-weight: 600; }
+  fieldset { border: 1px solid #8884; margin: 1rem 0; padding: 1rem; }
+  legend { padding: 0 .5em; font-weight: 600; }
+  label { display: block; margin: .4rem 0 .1rem; font-size: .85rem; opacity: .8; }
+  input, textarea { width: 100%; box-sizing: border-box; font: inherit; padding: .35rem; }
+  button { font: inherit; padding: .5rem 1rem; margin-top: .75rem; cursor: pointer; }
+  #placebo { display: none; background: #b91c1c; color: #fff; padding: .75rem 1rem;
+             font-weight: 600; margin: 1rem 0; }
+  #orderhash { word-break: break-all; background: #8882; padding: .5rem; margin: .5rem 0; }
+  .out { white-space: pre-wrap; word-break: break-all; background: #8881; padding: .5rem;
+         margin-top: .5rem; font-size: .8rem; min-height: 1.5rem; }
+  .muted { opacity: .65; font-size: .8rem; }
+</style>
+</head>
+<body>
+<h1>&Lambda;&nbsp;SPARTAN1</h1>
+<p class="muted">Exact-settlement RFQ primitive on Permit2. One contract. One function. Zero trust added.<br>
+Every relay response shown here is a claim — the only authority is the signed Order plus on-chain <code>settle()</code>.</p>
+
+<div id="placebo">
+  ⚠ PLACEHOLDER SPENDER CONFIGURED — quotes signed against it can <u>NEVER</u> settle:
+  settle() does not exist at that address. Signing here is for TESTING ONLY.
+</div>
+
+<fieldset>
+  <legend>config</legend>
+  <label>Spartan1 address (the Permit2 spender your signature binds to)</label>
+  <input id="spartan1" value="0x1111111111111111111111111111111111111111">
+  <label>chainId</label>
+  <input id="chainId" value="8453">
+  <label>relays (one URL per line — the dApp fans out to 8 chosen uniformly at random)</label>
+  <textarea id="relays" rows="3" placeholder="http://127.0.0.1:8545"></textarea>
+</fieldset>
+
+<fieldset>
+  <legend>maker — sign once, fan out transparently</legend>
+  <label>sellToken (what you give)</label><input id="mSell" placeholder="0x…">
+  <label>buyToken (what you receive)</label><input id="mBuy" placeholder="0x…">
+  <label>sellAmount (atomic)</label><input id="mSellAmt" placeholder="1000000000000000000">
+  <label>buyAmount (atomic)</label><input id="mBuyAmt" placeholder="3000000000">
+  <label>maxTip (atomic, in sellToken; 0 = self-fill only economics)</label><input id="mTip" value="0">
+  <div id="orderhash" hidden></div>
+  <button id="mSign">1 · preview Order hash</button>
+  <button id="mSubmit" disabled>2 · sign &amp; fan out</button>
+  <div class="out" id="mOut"></div>
+  <p class="muted">The Order hash shown BEFORE signing is the anti-phishing check: compare it with
+  what your counterparty/tooling displays. Signing uses <code>eth_signTypedData_v4</code>; the only
+  prerequisite is the one-time <code>approve(Permit2)</code> per token.</p>
+</fieldset>
+
+<fieldset>
+  <legend>taker — get a firm quote, settle it</legend>
+  <label>you pay (token)</label><input id="tSell" placeholder="0x…">
+  <label>you receive (token)</label><input id="tBuy" placeholder="0x…">
+  <label>you receive exactly (atomic; EXACT_OUTPUT)</label><input id="tBuyAmt" placeholder="1000000000000000000">
+  <button id="tQuote">get quote</button>
+  <button id="tSettle" disabled>settle()</button>
+  <div class="out" id="tOut"></div>
+  <p class="muted">Quotes are firm: zero slippage, zero band, exact on both legs — or total revert.
+  You (the caller) supply <code>buyAmount</code> from your own funds; approve Spartan1 for exactly
+  that amount, never infinite.</p>
+</fieldset>
+
+<script type="module">
+import {
+  ORDER_TYPE, ORDER_TYPEHASH, WITNESS_TYPE_STRING, PERMIT2, ZERO_ADDRESS, QUOTE_TTL, HOT_WINDOW,
+} from "../sdk/src/generated/constants.js";
+// Version pinned to the lockfile's viem (sdk/package-lock.json). CSP-conscious deployments
+// should vendor this file instead.
+import {
+  createWalletClient, custom, encodeAbiParameters, encodeFunctionData, keccak256, stringToHex,
+} from "https://esm.sh/viem@2.55.8";
+
+const $ = (id) => document.getElementById(id);
+const PLACEHOLDER = "0x1111111111111111111111111111111111111111";
+
+// ── sanity at load: the generated constants must self-agree (drift tripwire, dApp side) ──
+if (keccak256(stringToHex(ORDER_TYPE)) !== ORDER_TYPEHASH) {
+  document.body.innerHTML = "<b>constants drift: keccak(ORDER_TYPE) != ORDER_TYPEHASH — regenerate.</b>";
+  throw new Error("constants drift");
+}
+
+// settle((Order),uint256,uint256,bytes) — selector 0x0560694d, asserted in distribution/test_executor.py.
+const SETTLE_ABI = [{
+  type: "function", name: "settle", stateMutability: "nonpayable", outputs: [],
+  inputs: [
+    { name: "order", type: "tuple", components: [
+      { name: "maker", type: "address" }, { name: "taker", type: "address" },
+      { name: "sellToken", type: "address" }, { name: "buyToken", type: "address" },
+      { name: "sellAmount", type: "uint256" }, { name: "buyAmount", type: "uint256" },
+      { name: "recipient", type: "address" }, { name: "maxTip", type: "uint256" },
+      { name: "fillWindow", type: "uint256" }, { name: "deadline", type: "uint256" },
+    ]},
+    { name: "requestedAmount", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "makerSig", type: "bytes" },
+  ],
+}];
+
+// EIP-712 types derived by PARSING the generated ORDER_TYPE — never retyped by hand.
+const orderTypeFields = ORDER_TYPE
+  .slice(ORDER_TYPE.indexOf("(") + 1, ORDER_TYPE.lastIndexOf(")"))
+  .split(",").map((seg) => { const [type, name] = seg.trim().split(" "); return { name, type }; });
+const TYPES = {
+  TokenPermissions: [{ name: "token", type: "address" }, { name: "amount", type: "uint256" }],
+  Order: orderTypeFields,
+  PermitWitnessTransferFrom: [
+    { name: "permitted", type: "TokenPermissions" }, { name: "spender", type: "address" },
+    { name: "nonce", type: "uint256" }, { name: "deadline", type: "uint256" },
+    { name: "witness", type: "Order" },
+  ],
+};
+
+const spender = () => $("spartan1").value.trim();
+const chainId = () => Number($("chainId").value.trim());
+const relayList = () => $("relays").value.split("\n").map((s) => s.trim()).filter(Boolean);
+
+function refreshPlacebo() {
+  $("placebo").style.display =
+    spender().toLowerCase() === PLACEHOLDER.toLowerCase() ? "block" : "none";
+}
+$("spartan1").addEventListener("input", refreshPlacebo);
+refreshPlacebo();
+
+/** Uniform-random selection of 8 relays (all if fewer). Equal probability per relay — do not
+ *  "improve" with weighting: that reintroduces the centralisation this design removes. */
+function selectRelays(urls, target = 8) {
+  const pool = [...new Set(urls)];
+  if (pool.length <= target) return pool;
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, target);
+}
+
+const witness = (o) => keccak256(encodeAbiParameters(
+  [{ type: "bytes32" }, ...orderTypeFields.map(({ type }) => ({ type }))],
+  [ORDER_TYPEHASH, ...orderTypeFields.map(({ name }) => o[name])],
+));
+
+let pendingOrder = null;
+let pendingQuote = null;
+
+function buildMakerOrder(makerAddr) {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    maker: makerAddr, taker: ZERO_ADDRESS,
+    sellToken: $("mSell").value.trim(), buyToken: $("mBuy").value.trim(),
+    sellAmount: BigInt($("mSellAmt").value.trim()), buyAmount: BigInt($("mBuyAmt").value.trim()),
+    recipient: makerAddr, maxTip: BigInt($("mTip").value.trim() || "0"),
+    fillWindow: BigInt(now + HOT_WINDOW), deadline: BigInt(now + QUOTE_TTL),
+  };
+}
+
+async function wallet() {
+  if (!window.ethereum) throw new Error("no wallet (window.ethereum missing)");
+  const client = createWalletClient({ transport: custom(window.ethereum) });
+  const [account] = await client.requestAddresses();
+  return { client, account };
+}
+
+$("mSign").onclick = async () => {
+  try {
+    const { account } = await wallet();
+    pendingOrder = buildMakerOrder(account);
+    const h = witness(pendingOrder);
+    $("orderhash").hidden = false;
+    $("orderhash").textContent = `Order hash (verify before signing): ${h}`;
+    $("mSubmit").disabled = false;
+    $("mOut").textContent = "review the hash, then sign & fan out";
+  } catch (e) { $("mOut").textContent = String(e); }
+};
+
+$("mSubmit").onclick = async () => {
+  try {
+    const { client, account } = await wallet();
+    const o = pendingOrder;
+    const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
+    const nonce = BigInt("0x" + [...nonceBytes].map((b) => b.toString(16).padStart(2, "0")).join(""));
+    const signature = await client.signTypedData({
+      account,
+      domain: { name: "Permit2", chainId: chainId(), verifyingContract: PERMIT2 },
+      types: TYPES, primaryType: "PermitWitnessTransferFrom",
+      message: {
+        permitted: { token: o.sellToken, amount: o.sellAmount + o.maxTip },
+        spender: spender(), nonce, deadline: o.deadline, witness: o,
+      },
+    });
+    const body = JSON.stringify({
+      order: Object.fromEntries(orderTypeFields.map(({ name }) => [
+        name, ["fillWindow", "deadline"].includes(name) ? Number(o[name]) :
+              typeof o[name] === "bigint" ? o[name].toString() : o[name],
+      ])),
+      nonce: nonce.toString(), signature,
+    });
+    const targets = selectRelays(relayList());
+    if (!targets.length) { $("mOut").textContent = "signed, but no relays configured"; return; }
+    const results = await Promise.allSettled(targets.map((u) =>
+      fetch(`${u}/order`, { method: "POST", headers: { "Content-Type": "application/json" }, body })));
+    const ok = results.filter((r) => r.status === "fulfilled" && r.value.ok).length;
+    $("mOut").textContent = `fan-out: ${ok}/${targets.length} relays accepted` +
+      (spender().toLowerCase() === PLACEHOLDER.toLowerCase()
+        ? "\n⚠ NON-SETTLEABLE: signed against the placeholder spender." : "");
+  } catch (e) { $("mOut").textContent = String(e); }
+};
+
+$("tQuote").onclick = async () => {
+  try {
+    const relays = relayList();
+    if (!relays.length) throw new Error("no relays configured");
+    const q = new URLSearchParams({
+      sellToken: $("tSell").value.trim(), buyToken: $("tBuy").value.trim(),
+      buyAmount: $("tBuyAmt").value.trim(),
+    });
+    for (const u of selectRelays(relays)) {
+      const resp = await fetch(`${u}/quote?${q}`);
+      if (resp.status !== 200) continue;            // 404 = not quoting; try the next relay
+      pendingQuote = await resp.json();
+      $("tSettle").disabled = false;
+      $("tOut").textContent =
+        `you pay     ${pendingQuote.sellAmount} of ${pendingQuote.sellToken}\n` +
+        `you receive ${pendingQuote.buyAmount} of ${pendingQuote.buyToken}\n` +
+        `order hash claim: ${pendingQuote.order ? "recompute locally before trusting" : "—"}\n` +
+        `allowanceTarget: ${pendingQuote.allowanceTarget} (approve exactly ${pendingQuote.sellAmount})` +
+        (pendingQuote.settleable === false ? "\n⚠ NON-SETTLEABLE quote (placeholder/DRY_RUN maker)." : "");
+      return;
+    }
+    $("tOut").textContent = "no relay is quoting this pair right now (404 — normal, not an error)";
+  } catch (e) { $("tOut").textContent = String(e); }
+};
+
+$("tSettle").onclick = async () => {
+  try {
+    const { client, account } = await wallet();
+    const q = pendingQuote;
+    const o = q.order;
+    const tuple = {
+      maker: o.maker, taker: o.taker, sellToken: o.sellToken, buyToken: o.buyToken,
+      sellAmount: BigInt(o.sellAmount), buyAmount: BigInt(o.buyAmount), recipient: o.recipient,
+      maxTip: BigInt(o.maxTip), fillWindow: BigInt(o.fillWindow), deadline: BigInt(o.deadline),
+    };
+    const requested = tuple.sellAmount + tuple.maxTip;   // fallback window amount
+    const data = encodeFunctionData({ abi: SETTLE_ABI, functionName: "settle",
+      args: [tuple, requested, BigInt(q.nonce), q.signature] });
+    const hash = await client.sendTransaction({
+      account, chain: null, to: q.to ?? spender(), data,
+    });
+    $("tOut").textContent += `\nsettle() tx: ${hash}`;
+  } catch (e) { $("tOut").textContent += "\n" + String(e); }
+};
+</script>
+</body>
+</html>

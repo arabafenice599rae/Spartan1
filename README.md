@@ -356,7 +356,9 @@ spartan1/
 │   ├── test_relay.py         # conformance gate: P1–P7 violated one by one, inversion, fan-out uniformity
 │   ├── test_maker.py         # conformance gate: every guardrail violated, incl. inventory double-commit
 │   └── test_executor.py      # conformance gate: every guardrail violated, incl. the taker guard; off-chain e2e
-├── sdk/                      # TypeScript SDK — the witness type string lives here, CI-tested vs known digest
+├── sdk/                      # TypeScript SDK — constants GENERATED from client/order.py (never retyped); digest-gated vs the frozen vector
+├── scripts/
+│   └── gen_constants.py      # emits sdk/src/generated/constants.{ts,js}; the SDK drift test asserts byte equality
 ├── assets/                   # optional — logo.png / logo.svg (social preview, dApp)
 ├── foundry.toml              # Solady pinned to commit; Permit2 as immutable constructor arg
 └── README.md
@@ -364,7 +366,7 @@ spartan1/
 
 Build order is fixed: **core first** (`Spartan1.sol` + tests 2/3/5 written before the contract), fork gate green, *then* the distribution layer against the proven Order shape.
 
-**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus `distribution/` **partially** built — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, and the `test_relay.py` (96 assertions + an `openapi.yaml` schema-conformance gate) + `test_maker.py` (63 assertions) + `test_executor.py` (26 assertions) conformance gates. Still unbuilt: `distribution/index.html`, `sdk/`, and `assets/`.
+**In this repository today:** `src/`, `test/`, `client/`, `foundry.toml` (Parte I — the core), plus the full Parte II reference set — `openapi.yaml`, `relay.py`, `relays.json`, `maker.py`, `executor.py`, `index.html`, `sdk/` (constants generated from `client/order.py`, digest-gated), and the conformance gates: `test_relay.py` (96 + schema gate) · `test_maker.py` (63) · `test_executor.py` (26) · `sdk` (13, incl. the drift + cross-language digest gates). **Still open:** the on-chain fork gate (test 10, needs `L2_RPC`) and the `spender` re-freeze with the deployed address — the off-chain loop is tested; settlement is not yet proven.
 
 ---
 
@@ -384,6 +386,11 @@ python client/test_spartan1.py       # triple-digest harness must print the cano
 python3 distribution/test_relay.py   # relay conformance (96) + openapi schema gate
 python3 distribution/test_maker.py   # maker conformance, 63 assertions
 python3 distribution/test_executor.py # executor conformance (26) + off-chain e2e (settlement is Foundry's job)
+
+# sdk (constants generated, never retyped; drift + cross-language digest gates)
+cd sdk && npm install
+npm run typecheck                    # tsc --noEmit, strict
+npm test                             # node --test: 13 incl. byte-equality drift gate + frozen-digest gate
 # the schema gate parses openapi.yaml; it needs pyyaml, else it SKIPs (declared, not a silent pass):
 pip install pyyaml
 ```
@@ -410,7 +417,7 @@ No. Makers sign off-chain and pay zero gas; the executor submits the tx and pays
 Any standard ERC-20 via Permit2. Fee-on-transfer and rebasing tokens are *non-settleable by choice* — I6 reverts them rather than allow a silent loss.
 
 **Is it deployed or audited?**
-No — see "Is it safe to use in production?". This repository is the core (contract + gate + signing core); the distribution layer is Parte II, partially built: schema + relay + maker + executor + conformance gates (the executor's off-chain loop is tested; on-chain settlement is still the open Foundry fork gate); the dApp and the SDK are not yet.
+No — see "Is it safe to use in production?". This repository is the core (contract + gate + signing core); the distribution layer is Parte II, fully scaffolded: schema + relay + maker + executor + dApp + SDK, each with its conformance gate. The off-chain loop is tested end to end; **on-chain settlement is still the open Foundry fork gate (test 10)**, and the `spender` is still a placeholder to be re-frozen with the deployed address.
 
 ---
 
