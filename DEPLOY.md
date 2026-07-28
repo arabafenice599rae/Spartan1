@@ -50,6 +50,50 @@ step 2.
 
 ---
 
+## 1.5 Verify the deployment on-chain — BLOCKING
+
+Do not proceed on a `forge create` log alone. The next step binds **every signing leg** to
+`$SPARTAN1`; if that address is a typo, a wrong-chain paste, or a failed deploy, the result is a
+whole tree of signatures that verify nowhere — discovered only when capital is at risk.
+
+This is enforced, not advisory: `refreeze_spender.py` **refuses to write** without it.
+
+```bash
+export RPC_URL="$L2_RPC"          # the script reads --rpc-url or $RPC_URL
+python3 scripts/refreeze_spender.py --check "$SPARTAN1"
+```
+
+With an RPC present, `--check` runs the same verification it will enforce on the write, so this is a
+dry run of the blocking step. It asserts three things:
+
+| # | Check | Why |
+|---|---|---|
+| a | `eth_getCode($SPARTAN1)` is non-empty | something is actually deployed there |
+| b | runtime bytecode == the local `out/Spartan1.sol/Spartan1.json` | it is **this** contract, not merely *a* contract |
+| c | `PERMIT2()` == `0x000000000022D473030F116dDEE9F6B43aC78BA3` | it is wired to the canonical singleton your signatures are bound to |
+
+Two normalizations make (b) correct rather than merely strict — without them a **legitimate** deploy
+would be rejected:
+- **solc's CBOR metadata trailer** is stripped. It embeds an ipfs hash of the metadata, which depends
+  on absolute source paths and compiler settings, so it legitimately differs between the deployer's
+  machine and yours.
+- **The immutable windows are masked.** `PERMIT2` is `immutable`, so solc splices the constructor
+  argument straight into the runtime code while the local artifact keeps zeroed placeholders.
+
+Because (b) masks the immutables it is deliberately **blind** to which Permit2 was wired in — which is
+exactly why (c) is a separate assertion. A Spartan1 deployed against the wrong Permit2 passes (a) and
+(b) and is caught only by (c).
+
+> **This is not step 4.** Step 1.5 is cheap and local: *is the right code at that address?* Step 4
+> (gate 10) forks the chain and exercises real settlement against real Permit2. Both are required;
+> neither replaces the other.
+
+**Air-gapped signer?** `--i-verified-manually` is the only bypass. It is loud on stdout and is
+recorded permanently in the `CHANGELOG.md` release entry, which will state that the operator — not
+the script — asserted (a), (b) and (c). Use it only if you genuinely performed those checks.
+
+---
+
 ## 2. Re-freeze the vector spender — the one irreversible edit
 
 The frozen digest is a pure function of `(order, nonce, spender, chainId)`. Until now `spender` has
@@ -71,30 +115,42 @@ touched.
 **Then write:**
 
 ```bash
-python3 scripts/refreeze_spender.py "$SPARTAN1"
+RPC_URL="$L2_RPC" python3 scripts/refreeze_spender.py "$SPARTAN1"
 ```
 
 In write mode the script:
-1. **Refuses a red tree** — re-runs all suites first and aborts if any is red.
-2. Rewrites the **five vector-spender legs** and the **four frozen-digest legs** (the witness is
+1. **Verifies the deployment on-chain** (step 1.5's three checks) and **refuses to write** if no RPC
+   was supplied — `--i-verified-manually` is the only bypass, and it is recorded in `CHANGELOG.md`.
+   Re-freezing back *to* the placeholder sentinel skips this: nothing is deployed at `0x1111…1111`
+   by definition, which is what keeps the round-trip proof runnable offline.
+2. **Refuses a red tree** — re-runs all suites first and aborts if any is red.
+3. Rewrites the **five vector-spender legs** and the **four frozen-digest legs** (the witness is
    spender-independent; it is recomputed and rewritten as a no-op so the flow has no special cases).
-3. Regenerates `sdk/src/generated/constants.{ts,js}` from `client/order.py`.
-4. Writes `distribution/deployments.json` `chains[8453] = "$SPARTAN1"` (the authoritative registry;
+4. Regenerates `sdk/src/generated/constants.{ts,js}` from `client/order.py`.
+5. Writes `distribution/deployments.json` `chains[8453] = "$SPARTAN1"` (the authoritative registry;
    the coherence gate then asserts it equals the frozen vector spender).
-5. Bumps the SDK minor version in `sdk/package.json` and PREPENDS a `CHANGELOG.md` entry naming the
-   chain that gained an address. These two are intentionally **monotonic** — a release is not
+6. Bumps the SDK minor version in `sdk/package.json` and PREPENDS a `CHANGELOG.md` entry naming the
+   chain that gained an address **and how the deployment was verified** (by the script, or by the
+   operator via `--i-verified-manually`). These two are intentionally **monotonic** — a release is not
    reversible, so they are the one documented exclusion from the re-freeze round-trip identity (every
    signing leg and `deployments.json` ARE round-trip byte-identical; the version and changelog are not).
-6. Re-runs the coherence gate + every suite, and aborts (leaving the tree for inspection) on any red.
+7. Re-runs the coherence gate + every suite, and aborts (leaving the tree for inspection) on any red.
 
-The sentinel legs — `PLACEHOLDER_SPENDER` in `maker.py`, `PLACEHOLDER` in `index.html`, and the
-generated `PLACEHOLDER_SPENDER` in the SDK constants — are NEVER rewritten (the coherence gate pins
-them to `0x1111…1111` forever; rewriting them would invert the anti-placebo guard).
+The sentinel legs — `PLACEHOLDER_SPENDER` in `client/order.py` and `maker.py`, `PLACEHOLDER` in
+`index.html`, and the generated `PLACEHOLDER_SPENDER` in the SDK constants — are NEVER rewritten (the
+coherence gate pins all five to `0x1111…1111` forever; rewriting them would invert the anti-placebo
+guard).
 
 > **chainId note.** The vector is frozen for Base (8453). Deploying to a different chain means the
 > digest changes with `chainId` too; re-freezing the spender alone is not enough. Re-freeze against
 > the target chain and re-run gate 10 there (step 4). Base = the frozen chain, so a Base deployment
 > needs only the spender re-freeze.
+
+> **TODO — multi-chain is not a flag.** A `--chain-id` option would be misleading today: the frozen
+> vector, `test/Spartan1.t.sol`, the SDK test and `check_coherence.py` all assume a **single** digest.
+> Supporting a second chain means moving the coherence gate from "one value asserted across N legs" to
+> "N values indexed by chain", and every leg with it. That is a separate round, to be opened when a
+> second deployment (Arbitrum) is actually concrete — not a flag bolted onto this script.
 
 ---
 
