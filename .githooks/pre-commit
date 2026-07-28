@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Spartan1 pre-commit hook — LOCAL CONVENIENCE, NOT A GATE.
+#
+# Runs the cross-leg coherence check so a drifted frozen literal is caught at commit time rather
+# than in CI ten minutes later. It is deliberately bypassable (`git commit --no-verify`) and it is
+# NOT part of the security argument: hooks are per-clone, opt-in, and trivially skipped, so nothing
+# may depend on this having run. CI is the gate — .github/workflows/ci.yml runs the same check plus
+# every suite, and that is the one that decides.
+#
+# Enable (one-time, per clone):   git config core.hooksPath .githooks
+# Disable:                        git config --unset core.hooksPath
+# Skip once:                      git commit --no-verify
+
+set -u
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "pre-commit: python3 not found — skipping the coherence check (CI still enforces it)." >&2
+    exit 0
+fi
+
+if ! python3 "$repo_root/scripts/check_coherence.py"; then
+    cat >&2 <<'MSG'
+
+pre-commit: the cross-leg coherence gate is RED (see the failure above).
+
+The frozen witness/digest/spender literals must be byte-identical in every leg, and the
+placebo sentinel must stay 0x1111…1111 everywhere. Fix the divergence, or — if this is a
+deliberate re-freeze — use scripts/refreeze_spender.py rather than hand-editing.
+
+To commit anyway (this hook is a convenience, not a gate):  git commit --no-verify
+MSG
+    exit 1
+fi
+
+exit 0

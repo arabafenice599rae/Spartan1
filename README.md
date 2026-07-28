@@ -399,10 +399,15 @@ python3 distribution/test_executor.py # executor conformance (26) + off-chain e2
 # sdk (constants generated, never retyped; drift + cross-language digest gates)
 cd sdk && npm install
 npm run typecheck                    # tsc --noEmit, strict
-npm test                             # node --test: 22 incl. drift gate, frozen-digest gate, dApp quote guard
+npm test                             # node --test: 27 incl. drift gate, frozen-digest gate, dApp quote guard
 # the schema gate parses openapi.yaml; it needs pyyaml (already pinned in requirements.txt),
 # else it SKIPs (declared, not a silent pass).
+
+# hooks (one-time, per clone) — OPTIONAL local convenience, not a gate
+git config core.hooksPath .githooks   # pre-commit runs the coherence gate; `--no-verify` skips it
 ```
+
+`.githooks/pre-commit` is a **convenience, not a gate**: it runs the coherence check at commit time so drift surfaces before CI does, but hooks are per-clone, opt-in and bypassable with `git commit --no-verify`, so nothing in the security argument may depend on it having run. CI is the gate.
 
 CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR: `forge test` · the triple-digest harness · the three distribution suites · the cross-leg coherence gate · SDK typecheck + tests. The on-chain fork gate (test 10) is a **declared SKIP** in CI — it needs an external L2 RPC (flaky, and buys nothing on a public repo) — and CI surfaces that skip in the job summary rather than hiding it behind a green badge. Deployment is manual (`forge create`), never triggered by push, and the full deploy-day order — deploy → `scripts/refreeze_spender.py` → gate 10 → audit — is in [DEPLOY.md](DEPLOY.md). First chains: Base / Arbitrum (L2s with canonical Permit2).
 
