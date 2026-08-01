@@ -1,0 +1,749 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Spartan1 — settlement console</title>
+<meta name="robots" content="noindex"/>
+
+<!--
+  Spartan1 reference dApp — an instrument, not a brochure. The project page at the repo
+  root explains what this is; this file only operates it.
+
+  No analytics, no trackers, no external fonts. One runtime dependency: viem, pinned.
+
+  ARMED / DORMANT is DERIVED, never typed: on load the console reads distribution/deployments.json
+  for the configured chain. A null entry, the placeholder sentinel, or the zero address all mean
+  the same thing — nothing can settle — and every action that would produce a dead signature or a
+  doomed transaction stays disabled. On deploy day the re-freeze writes the real address into both
+  deployments.json and the field default below, and this console arms itself. No code change.
+
+  DO NOT EDIT WITHOUT CHECKING TWO THINGS:
+    1. assertQuoteSafe is extracted VERBATIM between its BEGIN/END markers and executed by
+       sdk/test/dapp-guard.test.ts. Keep the markers and the body byte-identical.
+    2. `const PLACEHOLDER = "0x1111…"` and `id="spartan1" value="0x1111…"` are frozen legs read
+       by scripts/check_coherence.py. Their exact spelling is load-bearing.
+-->
+
+<style>
+  /* The project page is stone-on-light: a document. This is its inverse — an instrument.
+     Same bronze/verdigris/crest family, lifted for a dark ground. */
+  :root {
+    --void:      #14110d;
+    --panel:     #1c1813;
+    --panel-hi:  #241f18;
+    --edge:      #2f2820;
+    --edge-hi:   #453b2d;
+    --text:      #e7e4db;
+    --muted:     #968c7c;
+    --verdigris: #57a896;
+    --bronze:    #c99a45;
+    --crest:     #ce4e44;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--void);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 16px 64px; }
+
+  :focus-visible { outline: 2px solid var(--verdigris); outline-offset: 2px; }
+
+  a { color: var(--verdigris); }
+
+  /* ── Status rail: the first thing you see and the last thing you can ignore ─── */
+  .rail {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--panel);
+    border-bottom: 1px solid var(--edge);
+    margin: 0 -16px 22px;
+    padding: 10px 16px;
+  }
+
+  .rail-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+  .lamp {
+    font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase;
+    padding: 4px 9px; border: 1px solid currentColor; font-weight: 600; white-space: nowrap;
+  }
+  .lamp.dormant { color: var(--crest); }
+  .lamp.armed   { color: var(--verdigris); }
+
+  .rail-title {
+    font-size: 12px; letter-spacing: 0.26em; text-transform: uppercase;
+    color: var(--muted); margin-right: auto;
+  }
+  .rail-title b { color: var(--bronze); font-weight: 600; }
+
+  .facts {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 2px 18px; margin-top: 9px; font-size: 11.5px; color: var(--muted);
+  }
+  .facts div { display: flex; gap: 7px; min-width: 0; }
+  .facts dt { color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; font-size: 10px; padding-top: 1px; }
+  .facts dd { margin: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .facts dd.off { color: var(--crest); }
+  .facts dd.on  { color: var(--verdigris); }
+
+  .reason {
+    margin-top: 9px; padding: 8px 10px; font-size: 12px; line-height: 1.5;
+    border-left: 2px solid var(--crest); background: var(--panel-hi); color: var(--muted);
+  }
+  .reason b { color: var(--text); font-weight: 600; }
+
+  /* ── Mode tabs ──────────────────────────────────────────────────────────────── */
+  .tabs { display: flex; gap: 0; border: 1px solid var(--edge); margin-bottom: 20px; }
+  .tabs button {
+    flex: 1; background: transparent; border: 0; border-right: 1px solid var(--edge);
+    color: var(--muted); font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em;
+    text-transform: uppercase; padding: 11px 8px; cursor: pointer;
+  }
+  .tabs button:last-child { border-right: 0; }
+  .tabs button[aria-selected="true"] { background: var(--panel-hi); color: var(--bronze); }
+
+  /* ── Panels ─────────────────────────────────────────────────────────────────── */
+  .card { border: 1px solid var(--edge); background: var(--panel); padding: 16px; margin-bottom: 14px; }
+
+  .card > h2 {
+    font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--verdigris);
+    margin: 0 0 14px; padding-bottom: 9px; border-bottom: 1px solid var(--edge);
+  }
+
+  label { display: block; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+
+  input, select, textarea {
+    width: 100%; font-family: var(--mono); font-size: 13px;
+    background: var(--void); color: var(--text);
+    border: 1px solid var(--edge-hi); border-radius: 0; padding: 8px 9px;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--verdigris); }
+  textarea { resize: vertical; min-height: 62px; }
+
+  .grid { display: grid; gap: 12px; }
+  .grid.two { grid-template-columns: 1fr 1fr; }
+  .leg { display: grid; grid-template-columns: 1fr 84px; gap: 8px; align-items: end; }
+
+  /* The amount instrument: you type human, the machine states atomic. */
+  .atomic {
+    grid-column: 1 / -1; font-size: 11.5px; color: var(--muted);
+    display: flex; justify-content: space-between; gap: 10px; margin-top: -4px;
+  }
+  .atomic b { color: var(--bronze); font-weight: 500; word-break: break-all; }
+  .atomic.bad b { color: var(--crest); }
+
+  button.act {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+    padding: 11px 16px; border: 1px solid var(--text); background: transparent; color: var(--text);
+    cursor: pointer; border-radius: 0;
+  }
+  button.act:hover:not(:disabled) { background: var(--text); color: var(--void); }
+  button.act:disabled { border-color: var(--edge-hi); color: #5d5548; cursor: not-allowed; }
+  button.act.primary:not(:disabled) { border-color: var(--bronze); color: var(--bronze); }
+  button.act.primary:hover:not(:disabled) { background: var(--bronze); color: var(--void); }
+
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+  .note { font-size: 11.5px; color: var(--muted); }
+
+  pre.out {
+    margin: 12px 0 0; padding: 12px; background: var(--void); border: 1px solid var(--edge);
+    font-size: 12px; line-height: 1.62; white-space: pre-wrap; word-break: break-all;
+    color: var(--text); max-height: 340px; overflow: auto;
+  }
+  pre.out:empty { display: none; }
+  pre.out .k { color: var(--muted); }
+
+  details.config { border: 1px solid var(--edge); background: var(--panel); margin-bottom: 14px; }
+  details.config > summary {
+    cursor: pointer; padding: 12px 16px; font-size: 10.5px; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--muted); list-style: none;
+  }
+  details.config > summary::-webkit-details-marker { display: none; }
+  details.config > summary::before { content: "▸ "; color: var(--bronze); }
+  details.config[open] > summary::before { content: "▾ "; }
+  details.config .body { padding: 0 16px 16px; display: grid; gap: 12px; }
+
+  footer { margin-top: 26px; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
+  footer a { color: var(--verdigris); }
+
+  [hidden] { display: none !important; }
+
+  @media (max-width: 560px) {
+    .grid.two { grid-template-columns: 1fr; }
+    .rail-title { font-size: 11px; letter-spacing: 0.18em; }
+  }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <!-- ══ STATUS RAIL ══════════════════════════════════════════════════════════ -->
+  <div class="rail">
+    <div class="rail-top">
+      <span class="rail-title"><b>Λ</b> Spartan1 · settlement console</span>
+      <span class="lamp dormant" id="lamp" role="status">checking…</span>
+    </div>
+    <dl class="facts">
+      <div><dt>chain</dt><dd id="f-chain">—</dd></div>
+      <div><dt>contract</dt><dd id="f-contract" class="off">—</dd></div>
+      <div><dt>relays</dt><dd id="f-relays">—</dd></div>
+      <div><dt>wallet</dt><dd id="f-wallet" class="off">not connected</dd></div>
+    </dl>
+    <p class="reason" id="reason" hidden></p>
+  </div>
+
+  <!-- ══ MODE ═════════════════════════════════════════════════════════════════ -->
+  <div class="tabs" role="tablist" aria-label="Mode">
+    <button role="tab" id="tab-maker" aria-controls="p-maker" aria-selected="true">Maker · quote</button>
+    <button role="tab" id="tab-taker" aria-controls="p-taker" aria-selected="false">Taker · settle</button>
+  </div>
+
+  <!-- ══ MAKER ════════════════════════════════════════════════════════════════ -->
+  <section id="p-maker" role="tabpanel" aria-labelledby="tab-maker">
+    <div class="card">
+      <h2>You give</h2>
+      <div class="leg">
+        <div><label for="mSell">sell token</label>
+          <input id="mSell" spellcheck="false" autocomplete="off" placeholder="0x…"/></div>
+        <div><label for="mSellDec">decimals</label>
+          <input id="mSellDec" type="number" min="0" max="36" value="18"/></div>
+        <div style="grid-column:1/-1"><label for="mSellAmt">amount</label>
+          <input id="mSellAmt" inputmode="decimal" spellcheck="false" placeholder="1.0"/></div>
+        <p class="atomic" id="mSellAtomic"><span>atomic</span><b>—</b></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>You receive</h2>
+      <div class="leg">
+        <div><label for="mBuy">buy token</label>
+          <input id="mBuy" spellcheck="false" autocomplete="off" placeholder="0x…"/></div>
+        <div><label for="mBuyDec">decimals</label>
+          <input id="mBuyDec" type="number" min="0" max="36" value="6"/></div>
+        <div style="grid-column:1/-1"><label for="mBuyAmt">amount</label>
+          <input id="mBuyAmt" inputmode="decimal" spellcheck="false" placeholder="3000"/></div>
+        <p class="atomic" id="mBuyAtomic"><span>atomic</span><b>—</b></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Terms</h2>
+      <div class="grid two">
+        <div><label for="mTip">executor tip ceiling (in sell token)</label>
+          <input id="mTip" inputmode="decimal" spellcheck="false" value="0"/></div>
+        <div><label>validity</label>
+          <input id="mValidity" value="" readonly aria-readonly="true"/></div>
+      </div>
+      <p class="atomic" id="mTipAtomic"><span>atomic</span><b>—</b></p>
+
+      <div class="actions">
+        <button class="act" id="mPreview">1 · preview hash</button>
+        <button class="act primary" id="mSubmit" disabled>2 · sign &amp; fan out</button>
+        <span class="note" id="mHint"></span>
+      </div>
+      <pre class="out" id="mOut"></pre>
+    </div>
+  </section>
+
+  <!-- ══ TAKER ════════════════════════════════════════════════════════════════ -->
+  <section id="p-taker" role="tabpanel" aria-labelledby="tab-taker" hidden>
+    <div class="card">
+      <h2>You pay</h2>
+      <div class="leg">
+        <div><label for="tSell">token you pay</label>
+          <input id="tSell" spellcheck="false" autocomplete="off" placeholder="0x…"/></div>
+        <div><label for="tSellDec">decimals</label>
+          <input id="tSellDec" type="number" min="0" max="36" value="6"/></div>
+        <div style="grid-column:1/-1"><label for="tSellAmt">amount</label>
+          <input id="tSellAmt" inputmode="decimal" spellcheck="false" placeholder="3000"/></div>
+        <p class="atomic" id="tSellAtomic"><span>atomic</span><b>—</b></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>You receive</h2>
+      <div><label for="tBuy">token you receive</label>
+        <input id="tBuy" spellcheck="false" autocomplete="off" placeholder="0x…"/></div>
+
+      <div class="actions">
+        <button class="act" id="tQuote">1 · request quote</button>
+        <button class="act primary" id="tSettle" disabled>2 · settle()</button>
+      </div>
+      <pre class="out" id="tOut"></pre>
+    </div>
+  </section>
+
+  <!-- ══ CONFIG ═══════════════════════════════════════════════════════════════ -->
+  <details class="config">
+    <summary>Configuration</summary>
+    <div class="body">
+      <div class="grid two">
+        <div><label for="chainId">chain id</label>
+          <input id="chainId" value="8453"/></div>
+        <div><label for="spartan1">Spartan1 (Permit2 spender)</label>
+          <input id="spartan1" value="0x1111111111111111111111111111111111111111"/></div>
+      </div>
+      <div>
+        <label for="relays">relays — one URL per line</label>
+        <textarea id="relays" spellcheck="false" placeholder="https://relay.example.org"></textarea>
+      </div>
+      <div class="actions">
+        <button class="act" id="pingRelays">check relays</button>
+        <span class="note">Eight are picked at random per fan-out. Equal odds each, always.</span>
+      </div>
+    </div>
+  </details>
+
+  <footer>
+    Read <a href="../index.html">what this is</a> ·
+    <a href="../SPEC.md">spec</a> ·
+    <a href="../THREAT_MODEL.md">threat model</a><br/>
+    Nothing here is advice. Values a relay supplies are re-verified locally and refused on any
+    divergence. MIT licensed.
+  </footer>
+
+</div>
+
+<script type="module">
+import {
+  ORDER_TYPE, ORDER_TYPEHASH, WITNESS_TYPE_STRING, PERMIT2, ZERO_ADDRESS, QUOTE_TTL, HOT_WINDOW,
+} from "../sdk/src/generated/constants.js";
+// Version pinned to the lockfile's viem (sdk/package-lock.json). CSP-conscious deployments
+// should vendor this file instead.
+import {
+  createWalletClient, custom, encodeAbiParameters, encodeFunctionData, keccak256, stringToHex,
+} from "https://esm.sh/viem@2.55.8";
+
+const $ = (id) => document.getElementById(id);
+const PLACEHOLDER = "0x1111111111111111111111111111111111111111";
+
+// ── sanity at load: the generated constants must self-agree (drift tripwire, dApp side) ──
+if (keccak256(stringToHex(ORDER_TYPE)) !== ORDER_TYPEHASH) {
+  document.body.innerHTML = "<b>constants drift: keccak(ORDER_TYPE) != ORDER_TYPEHASH — regenerate.</b>";
+  throw new Error("constants drift");
+}
+
+// settle((Order),uint256,uint256,bytes) — selector 0x0560694d, asserted in distribution/test_executor.py.
+const SETTLE_ABI = [{
+  type: "function", name: "settle", stateMutability: "nonpayable", outputs: [],
+  inputs: [
+    { name: "order", type: "tuple", components: [
+      { name: "maker", type: "address" }, { name: "taker", type: "address" },
+      { name: "sellToken", type: "address" }, { name: "buyToken", type: "address" },
+      { name: "sellAmount", type: "uint256" }, { name: "buyAmount", type: "uint256" },
+      { name: "recipient", type: "address" }, { name: "maxTip", type: "uint256" },
+      { name: "fillWindow", type: "uint256" }, { name: "deadline", type: "uint256" },
+    ]},
+    { name: "requestedAmount", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "makerSig", type: "bytes" },
+  ],
+}];
+
+// EIP-712 types derived by PARSING the generated ORDER_TYPE — never retyped by hand.
+const orderTypeFields = ORDER_TYPE
+  .slice(ORDER_TYPE.indexOf("(") + 1, ORDER_TYPE.lastIndexOf(")"))
+  .split(",").map((seg) => { const [type, name] = seg.trim().split(" "); return { name, type }; });
+const TYPES = {
+  TokenPermissions: [{ name: "token", type: "address" }, { name: "amount", type: "uint256" }],
+  Order: orderTypeFields,
+  PermitWitnessTransferFrom: [
+    { name: "permitted", type: "TokenPermissions" }, { name: "spender", type: "address" },
+    { name: "nonce", type: "uint256" }, { name: "deadline", type: "uint256" },
+    { name: "witness", type: "Order" },
+  ],
+};
+
+const spender = () => $("spartan1").value.trim();
+const chainId = () => Number($("chainId").value.trim());
+const relayList = () => $("relays").value.split("\n").map((s) => s.trim()).filter(Boolean);
+
+const sameAddr = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+// A spender that can never settle: the placeholder sentinel, empty/unset, or the zero address.
+// The dApp must refuse null/unset as loudly as the placeholder (same banner, same settle-disable).
+const unsettleableSpender = (s) =>
+  !s || !/^0x[0-9a-fA-F]{40}$/.test(s) || sameAddr(s, PLACEHOLDER) || sameAddr(s, ZERO_ADDRESS);
+
+/** Uniform-random selection of 8 relays (all if fewer). Equal probability per relay — do not
+ *  "improve" with weighting: that reintroduces the centralisation this design removes. */
+function selectRelays(urls, target = 8) {
+  const pool = [...new Set(urls)];
+  if (pool.length <= target) return pool;
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, target);
+}
+
+const witness = (o) => keccak256(encodeAbiParameters(
+  [{ type: "bytes32" }, ...orderTypeFields.map(({ type }) => ({ type }))],
+  [ORDER_TYPEHASH, ...orderTypeFields.map(({ name }) => o[name])],
+));
+
+// ── BEGIN assertQuoteSafe (extracted verbatim by sdk/test/dapp-guard.test.ts — keep markers) ──
+/** MOTHER PRINCIPLE, enforced: NO security-critical value may come from a relay. A quote's
+ *  `to` and `allowanceTarget` are relay claims — both are already known locally (the configured
+ *  Spartan1), so a divergent claim is refused outright, and the flat taker-view fields must be
+ *  the exact inversion of the signed order (display integrity: what you see is what settles).
+ *  Without this, a hostile relay chains `allowanceTarget` (user approves its contract) with
+ *  `to` (settle() redirected there) into a taker-funds drain. Throws on any violation. */
+function assertQuoteSafe(q, configuredSpender) {
+  const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+  if (q.to !== undefined && !same(q.to, configuredSpender))
+    throw new Error(`relay 'to' (${q.to}) != configured Spartan1 — refused`);
+  if (q.allowanceTarget !== undefined && !same(q.allowanceTarget, configuredSpender))
+    throw new Error(`relay allowanceTarget (${q.allowanceTarget}) != configured Spartan1 — refused`);
+  if (!q.order || !q.nonce || !q.signature) throw new Error("quote missing settleable payload");
+  if (!same(q.sellToken, q.order.buyToken) || !same(q.buyToken, q.order.sellToken)
+      || String(q.sellAmount) !== String(q.order.buyAmount)
+      || String(q.buyAmount) !== String(q.order.sellAmount))
+    throw new Error("quote flat fields are not the inversion of the signed order — refused");
+  return true;
+}
+// ── END assertQuoteSafe ──
+
+/* ═══ Amount instrument ══════════════════════════════════════════════════════════
+   Human ↔ atomic, exactly, with no floating point anywhere. A quote is a commitment
+   to an integer number of base units; a rounded input is a different commitment than
+   the one intended, and the contract will settle whatever was signed. So an input
+   carrying more decimal places than the token has is refused rather than truncated. */
+function toAtomic(human, decimals) {
+  const s = String(human ?? "").trim();
+  if (s === "") return { ok: false, why: "empty" };
+  if (!/^\d*\.?\d*$/.test(s) || s === ".") return { ok: false, why: "not a decimal number" };
+  const [whole = "", frac = ""] = s.split(".");
+  if (frac.length > decimals)
+    return { ok: false, why: `${frac.length} decimal places, token has ${decimals}` };
+  const digits = (whole || "0") + frac.padEnd(decimals, "0");
+  return { ok: true, value: BigInt(digits) };
+}
+
+function toHuman(atomic, decimals) {
+  const s = BigInt(atomic).toString().padStart(decimals + 1, "0");
+  const whole = s.slice(0, s.length - decimals);
+  const frac = decimals ? s.slice(s.length - decimals).replace(/0+$/, "") : "";
+  return frac ? `${whole}.${frac}` : whole;
+}
+
+const decOf = (id) => {
+  const n = Number($(id).value);
+  return Number.isInteger(n) && n >= 0 && n <= 36 ? n : 18;
+};
+
+/** Wire a human-amount input to its atomic readout. Returns a getter for the atomic value. */
+function bindAmount(amtId, decId, outId) {
+  const paint = () => {
+    const out = $(outId), b = out.querySelector("b");
+    const r = toAtomic($(amtId).value, decOf(decId));
+    if (r.ok) { out.classList.remove("bad"); b.textContent = r.value.toString(); }
+    else { out.classList.add("bad"); b.textContent = $(amtId).value.trim() === "" ? "—" : r.why; }
+    refreshArmed();
+  };
+  $(amtId).addEventListener("input", paint);
+  $(decId).addEventListener("input", paint);
+  paint();
+  return () => {
+    const r = toAtomic($(amtId).value, decOf(decId));
+    if (!r.ok) throw new Error(`${amtId}: ${r.why}`);
+    return r.value;
+  };
+}
+
+const getSellAtomic = bindAmount("mSellAmt", "mSellDec", "mSellAtomic");
+const getBuyAtomic  = bindAmount("mBuyAmt",  "mBuyDec",  "mBuyAtomic");
+const getTipAtomic  = bindAmount("mTip",     "mSellDec", "mTipAtomic");
+bindAmount("tSellAmt", "tSellDec", "tSellAtomic");
+
+$("mValidity").value = `${QUOTE_TTL}s · hot ${HOT_WINDOW}s`;
+
+/* ═══ ARMED / DORMANT — derived, never typed ═════════════════════════════════════ */
+let registry = null;         // deployments.json, or null if unavailable
+let walletAddr = null;
+
+async function loadRegistry() {
+  try {
+    const r = await fetch("./deployments.json", { cache: "no-store" });
+    registry = await r.json();
+  } catch { registry = null; }
+  const chains = registry?.chains ?? registry ?? {};
+  const entry = chains?.[String(chainId())];
+  const addr = typeof entry === "string" ? entry : entry?.spartan1;
+  // The registry is authoritative for WHICH address; it is never trusted blindly for whether
+  // that address is real — the operator verifies code on-chain before publishing it (DEPLOY.md).
+  if (addr && !unsettleableSpender(addr)) $("spartan1").value = addr;
+  refreshArmed();
+}
+
+function armedState() {
+  const s = spender();
+  if (unsettleableSpender(s)) {
+    const chains = registry?.chains ?? registry ?? {};
+    const known = chains && Object.prototype.hasOwnProperty.call(chains, String(chainId()));
+    return {
+      armed: false,
+      why: !registry
+        ? "No deployment registry could be read, so there is no address to settle against."
+        : !known
+        ? `No entry for chain ${chainId()} in the deployment registry.`
+        : "The settlement address is still the placeholder: nothing is deployed on this chain yet.",
+    };
+  }
+  return { armed: true };
+}
+
+function refreshArmed() {
+  const st = armedState();
+  const lamp = $("lamp");
+  lamp.className = `lamp ${st.armed ? "armed" : "dormant"}`;
+  lamp.textContent = st.armed ? "armed" : "dormant";
+
+  $("f-chain").textContent = String(chainId() || "—");
+  const s = spender();
+  $("f-contract").textContent = st.armed ? `${s.slice(0, 10)}…${s.slice(-6)}` : "none deployed";
+  $("f-contract").className = st.armed ? "on" : "off";
+
+  const n = relayList().length;
+  $("f-relays").textContent = n === 0 ? "none configured" : `${n} configured`;
+  $("f-relays").className = n === 0 ? "off" : "";
+
+  const reason = $("reason");
+  if (st.armed) reason.hidden = true;
+  else {
+    reason.hidden = false;
+    reason.innerHTML =
+      `<b>Dormant.</b> ${st.why} Signing now would produce a commitment that can never be ` +
+      `settled, so every action that needs a live venue stays disabled. This console arms ` +
+      `itself the moment a real address is published — nothing here needs changing.`;
+  }
+
+  // Everything that would produce a dead signature or a doomed transaction.
+  $("mSubmit").disabled = !st.armed || !pendingOrder;
+  $("tQuote").disabled = !st.armed || relayList().length === 0;
+  $("tSettle").disabled = !st.armed || !pendingQuote || pendingQuote.settleable === false;
+  $("mHint").textContent = st.armed
+    ? (pendingOrder ? "" : "preview first — you sign what you saw")
+    : "signing disabled while dormant";
+}
+
+for (const id of ["spartan1", "chainId", "relays"]) {
+  $(id).addEventListener("input", () => { if (id === "chainId") loadRegistry(); else refreshArmed(); });
+}
+
+/* ═══ Tabs ═══════════════════════════════════════════════════════════════════════ */
+for (const [tab, panel, other, otherPanel] of [
+  ["tab-maker", "p-maker", "tab-taker", "p-taker"],
+  ["tab-taker", "p-taker", "tab-maker", "p-maker"],
+]) {
+  $(tab).addEventListener("click", () => {
+    $(tab).setAttribute("aria-selected", "true");
+    $(other).setAttribute("aria-selected", "false");
+    $(panel).hidden = false;
+    $(otherPanel).hidden = true;
+  });
+}
+
+/* ═══ Wallet ═════════════════════════════════════════════════════════════════════ */
+async function wallet() {
+  if (!window.ethereum) throw new Error("no injected wallet found");
+  const client = createWalletClient({ transport: custom(window.ethereum) });
+  const [account] = await client.requestAddresses();
+  const walletChain = await client.getChainId();
+  if (walletChain !== chainId())
+    throw new Error(`wallet is on chainId ${walletChain}, configured ${chainId()} — refused`);
+  walletAddr = account;
+  $("f-wallet").textContent = `${account.slice(0, 8)}…${account.slice(-4)}`;
+  $("f-wallet").className = "on";
+  return { client, account };
+}
+
+/* ═══ Maker ══════════════════════════════════════════════════════════════════════ */
+let pendingOrder = null;
+let pendingQuote = null;
+
+function buildMakerOrder(makerAddr) {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    maker: makerAddr, taker: ZERO_ADDRESS,
+    sellToken: $("mSell").value.trim(), buyToken: $("mBuy").value.trim(),
+    sellAmount: getSellAtomic(), buyAmount: getBuyAtomic(),
+    recipient: makerAddr, maxTip: getTipAtomic(),
+    fillWindow: BigInt(now + HOT_WINDOW), deadline: BigInt(now + QUOTE_TTL),
+  };
+}
+
+$("mPreview").onclick = async () => {
+  try {
+    const { account } = await wallet();
+    pendingOrder = buildMakerOrder(account);
+    const o = pendingOrder;
+    const sellDec = decOf("mSellDec"), buyDec = decOf("mBuyDec");
+    $("mOut").innerHTML =
+      `<span class="k">you give    </span>${toHuman(o.sellAmount, sellDec)} (${o.sellAmount}) ${o.sellToken}\n` +
+      `<span class="k">you receive </span>${toHuman(o.buyAmount, buyDec)} (${o.buyAmount}) ${o.buyToken}\n` +
+      `<span class="k">tip ceiling </span>${toHuman(o.maxTip, sellDec)} (${o.maxTip})\n` +
+      `<span class="k">deadline    </span>${o.deadline} · hot until ${o.fillWindow}\n` +
+      `<span class="k">order hash  </span>${witness(o)}\n\n` +
+      `Compare that hash with what your wallet shows. They must match; if they do not, ` +
+      `something between you and the signature is lying.`;
+    refreshArmed();
+  } catch (e) { $("mOut").textContent = String(e); }
+};
+
+$("mSubmit").onclick = async () => {
+  try {
+    if (!pendingOrder) throw new Error("preview first");
+    if (!armedState().armed) throw new Error("dormant — refusing to sign a dead commitment");
+    const { client, account } = await wallet();
+    const o = pendingOrder;
+    if (!sameAddr(o.maker, account)) throw new Error("wallet changed since preview — preview again");
+
+    const nonce = BigInt("0x" + [...crypto.getRandomValues(new Uint8Array(32))]
+      .map((b) => b.toString(16).padStart(2, "0")).join(""));
+
+    const signature = await client.signTypedData({
+      account,
+      domain: { name: "Permit2", chainId: chainId(), verifyingContract: PERMIT2 },
+      types: TYPES,
+      primaryType: "PermitWitnessTransferFrom",
+      message: {
+        permitted: { token: o.sellToken, amount: o.sellAmount + o.maxTip },
+        spender: spender(), nonce, deadline: o.deadline, witness: o,
+      },
+    });
+
+    const body = JSON.stringify({
+      order: Object.fromEntries(orderTypeFields.map(({ name, type }) =>
+        [name, type === "uint256" ? o[name].toString() : o[name]])),
+      nonce: nonce.toString(), signature, chainId: chainId(), spartan1: spender(),
+    });
+
+    const targets = selectRelays(relayList());
+    const results = await Promise.allSettled(targets.map((u) =>
+      fetch(`${u}/order`, { method: "POST", headers: { "Content-Type": "application/json" }, body })));
+    const ok = results.filter((r) => r.status === "fulfilled" && r.value.ok).length;
+    const failed = targets.filter((_, i) =>
+      !(results[i].status === "fulfilled" && results[i].value.ok));
+
+    $("mOut").innerHTML +=
+      `\n\n<span class="k">signed      </span>${signature.slice(0, 26)}…\n` +
+      `<span class="k">fan-out     </span>${ok}/${targets.length} relays accepted` +
+      (failed.length ? `\n<span class="k">no answer   </span>${failed.join(", ")}` : "") +
+      `\n\nA relay can only omit or delay. It cannot alter an amount or forge a signature — ` +
+      `whoever holds this order can settle it on-chain without any relay at all.`;
+  } catch (e) { $("mOut").innerHTML += "\n" + String(e); }
+};
+
+/* ═══ Taker ══════════════════════════════════════════════════════════════════════ */
+$("tQuote").onclick = async () => {
+  try {
+    pendingQuote = null;
+    const relays = relayList();
+    if (!relays.length) throw new Error("no relays configured");
+    const dec = decOf("tSellDec");
+    const amt = toAtomic($("tSellAmt").value, dec);
+    if (!amt.ok) throw new Error(`amount: ${amt.why}`);
+
+    // Taker-centric query, the 0x convention: sellToken is what YOU pay.
+    const q = new URLSearchParams({
+      sellToken: $("tSell").value.trim(), buyToken: $("tBuy").value.trim(),
+      sellAmount: amt.value.toString(),
+      ...(walletAddr ? { taker: walletAddr } : {}),
+    });
+
+    const refused = [];
+    for (const u of selectRelays(relays)) {
+      const resp = await fetch(`${u}/quote?${q}`);
+      if (resp.status !== 200) continue;            // 404 = not quoting; try the next relay
+      const candidate = await resp.json();
+      try {
+        assertQuoteSafe(candidate, spender());       // no security value from a relay, ever
+      } catch (err) {
+        refused.push(`${u}: ${err.message}`);
+        continue;                                    // hostile/broken relay → next one
+      }
+      pendingQuote = candidate;
+      // Recompute the order hash LOCALLY (anti-phishing, symmetric with the maker flow).
+      const o = candidate.order;
+      const localHash = witness(Object.fromEntries(orderTypeFields.map(({ name }) => [
+        name, ["sellAmount", "buyAmount", "maxTip", "fillWindow", "deadline"].includes(name)
+          ? BigInt(o[name]) : o[name],
+      ])));
+      const nonSettleable = candidate.settleable === false;
+      const left = Math.max(0, Number(o.deadline) - Math.floor(Date.now() / 1000));
+      $("tOut").innerHTML =
+        `<span class="k">you pay     </span>${toHuman(candidate.sellAmount, dec)} (${candidate.sellAmount}) ${candidate.sellToken}\n` +
+        `<span class="k">you receive </span>${candidate.buyAmount} ${candidate.buyToken}\n` +
+        `<span class="k">order hash  </span>${localHash} <span class="k">(recomputed here)</span>\n` +
+        `<span class="k">expires     </span>~${left}s\n` +
+        `<span class="k">approve     </span>${spender()} for exactly ${candidate.sellAmount}\n` +
+        `<span class="k">            </span>the CONFIGURED Spartan1 — never an address a relay supplies` +
+        (nonSettleable ? "\n\n⚠ NON-SETTLEABLE quote (placeholder / DRY_RUN maker) — settle disabled." : "") +
+        (refused.length ? `\n\n<span class="k">refused     </span>${refused.join("; ")}` : "");
+      refreshArmed();
+      return;
+    }
+    $("tOut").textContent = (refused.length ? `refused quotes: ${refused.join("; ")}\n` : "")
+      + "no acceptable quote right now (404 = not quoting — normal, not an error)";
+    refreshArmed();
+  } catch (e) { $("tOut").textContent = String(e); }
+};
+
+$("tSettle").onclick = async () => {
+  try {
+    const { client, account } = await wallet();
+    const q = pendingQuote;
+    assertQuoteSafe(q, spender());                   // defense in depth: re-check before funds move
+    if (q.settleable === false) throw new Error("non-settleable quote — refusing to settle");
+    const walletChain = await client.getChainId();
+    if (walletChain !== chainId())
+      throw new Error(`wallet is on chainId ${walletChain}, configured ${chainId()} — refused`);
+    const o = q.order;
+    const tuple = {
+      maker: o.maker, taker: o.taker, sellToken: o.sellToken, buyToken: o.buyToken,
+      sellAmount: BigInt(o.sellAmount), buyAmount: BigInt(o.buyAmount), recipient: o.recipient,
+      maxTip: BigInt(o.maxTip), fillWindow: BigInt(o.fillWindow), deadline: BigInt(o.deadline),
+    };
+    const requested = tuple.sellAmount + tuple.maxTip;   // fallback window amount
+    const data = encodeFunctionData({ abi: SETTLE_ABI, functionName: "settle",
+      args: [tuple, requested, BigInt(q.nonce), q.signature] });
+    const hash = await client.sendTransaction({
+      // to = the CONFIGURED Spartan1, always. Never q.to: a relay must not choose where a
+      // transaction goes (mother principle) — assertQuoteSafe refuses a divergent claim anyway.
+      account, chain: null, to: spender(), data,
+    });
+    $("tOut").innerHTML += `\n\n<span class="k">settle() tx </span>${hash}`;
+  } catch (e) { $("tOut").innerHTML += "\n" + String(e); }
+};
+
+/* ═══ Relay reachability — on demand, never a surprise call at load ══════════════ */
+$("pingRelays").onclick = async () => {
+  const urls = relayList();
+  if (!urls.length) { $("f-relays").textContent = "none configured"; return; }
+  const nonce = crypto.randomUUID();
+  const results = await Promise.allSettled(urls.map(async (u) => {
+    const r = await fetch(`${u}/health?nonce=${nonce}`);
+    const h = await r.json();
+    // A relay that cannot echo the nonce with a current block is stale or phantom — not trusted.
+    return h?.challenge?.nonce === nonce;
+  }));
+  const live = results.filter((r) => r.status === "fulfilled" && r.value === true).length;
+  $("f-relays").textContent = `${live}/${urls.length} answering`;
+  $("f-relays").className = live === 0 ? "off" : "on";
+};
+
+loadRegistry();
+</script>
+</body>
+</html>
