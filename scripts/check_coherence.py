@@ -58,12 +58,20 @@ SPEC: list[tuple[str, str, str]] = [
     ("digest", "client/test_spartan1.py",     r'EXPECT_DIGEST\s*=\s*"' + HEX64 + r'"'),
     ("digest", "sdk/test/sdk.test.ts",        r'const EXPECT_DIGEST\s*=\s*"' + HEX64 + r'"'),
     ("digest", "SPEC.md",                     r"digest  \(EIP-712 PermitWitnessTransferFrom signing hash\):\s*\n\s*" + HEX64),
+    # The project landing page (repo root) recomputes the digest in the browser and diffs it against
+    # this literal. \s* spans the newline: the value sits on the line after `const EXPECT_DIGEST =`.
+    ("digest", "index.html",                  r'EXPECT_DIGEST\s*=\s*"' + HEX64 + r'"'),
     # vector spender (moves on re-freeze)
     ("vector_spender", "test/Spartan1.t.sol",     r"VEC_SPENDER\s*=\s*" + ADDR),
     ("vector_spender", "client/test_spartan1.py", r'\nSPENDER\s*=\s*"' + ADDR + r'"'),
     ("vector_spender", "sdk/test/sdk.test.ts",    r'const SPENDER\s*=\s*"' + ADDR + r'"'),
     ("vector_spender", "distribution/test_relay.py", r'\nSPARTAN1\s*=\s*"' + ADDR + r'"'),
     ("vector_spender", "distribution/index.html",    r'id="spartan1" value="' + ADDR + r'"'),
+    # Root landing page. This is the VECTOR spender, not the sentinel: it is fed into the digest the
+    # page recomputes, so it MUST move on re-freeze. Registering the page's digest without this one
+    # would leave the page computing the OLD digest against the NEW frozen value on deploy day —
+    # a public page loudly contradicting itself.
+    ("vector_spender", "index.html",                 r'const SPENDER\s*=\s*"' + ADDR + r'"'),
     # placebo sentinel (frozen forever). client/order.py is FIRST because it is the single source
     # the other legs derive from — reading only the derived legs would leave the source itself
     # unpoliced, and the generated ones are trustworthy only while a DIFFERENT gate (the SDK drift
@@ -84,7 +92,7 @@ SPEC: list[tuple[str, str, str]] = [
 # prevent. These numbers are deliberately hardcoded rather than derived from SPEC (deriving them
 # would move in lockstep and assert nothing): removing a leg now REQUIRES editing this table, which
 # is a visible, reviewable act rather than a silent deletion.
-EXPECTED_LEGS = {"witness": 4, "digest": 4, "vector_spender": 5, "sentinel": 5}
+EXPECTED_LEGS = {"witness": 4, "digest": 5, "vector_spender": 6, "sentinel": 5}
 
 
 def extract() -> tuple[dict[str, list[tuple[str, str]]], list[str]]:

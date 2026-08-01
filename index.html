@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Spartan1 — exact-settlement RFQ primitive on Permit2</title>
+<meta name="description" content="A maker signs an order with exact amounts on both legs. It settles exactly as signed, or the whole transaction reverts. Verify the frozen digest yourself, in this page."/>
+
+<!--
+  Spartan1 project page.
+
+  No analytics, no trackers, no external fonts — same rule as the dApp.
+  One runtime dependency: viem, pinned, used only to hash. This page never
+  touches a wallet, never asks for a key, and never sends anything anywhere.
+
+  It imports the type string from sdk/src/generated/constants.js — the single
+  source, generated from client/order.py. Nothing here is retyped. If that file
+  is missing the interactive panel says so instead of guessing.
+
+  FROZEN LITERALS — REGISTERED. Two values below are frozen and are read by
+  scripts/check_coherence.py as coherence legs, so neither can drift silently:
+
+    EXPECT_DIGEST  -> "digest" leg          (5 legs total)
+    SPENDER        -> "vector_spender" leg  (6 legs total)
+
+  SPENDER is the canonical VECTOR spender, not the anti-placebo sentinel: it is
+  fed into the digest this page recomputes, so it MUST move on re-freeze. Were
+  it left unregistered, deploy day would rewrite EXPECT_DIGEST and leave SPENDER
+  behind, and this page would render "64 of 64 characters differ" on an
+  untouched order. scripts/refreeze_spender.py rewrites both together; the
+  round trip is proven byte-identical.
+
+  Do not hand-edit either value, and do not reformat these two declarations —
+  the surrounding text is the gate's extraction anchor.
+-->
+
+<style>
+  :root {
+    /* Weathered bronze: the raw metal, the patina it grows, the crest above it. */
+    --stone:      #e7e4db;
+    --stone-deep: #dad6cb;
+    --stone-edge: #c6c1b4;
+    --ink:        #16130f;
+    --ink-soft:   #4a443c;
+    --verdigris:  #2e6258;
+    --bronze:     #a8752e;
+    --bronze-wash:#f0e2c8;
+    --crest:      #9e2b25;
+
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--stone);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 940px; margin: 0 auto; padding: 0 24px; }
+  .prose { max-width: 68ch; }
+
+  a { color: var(--verdigris); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  a:hover { color: var(--ink); }
+
+  :focus-visible {
+    outline: 2px solid var(--verdigris);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  /* ── Typography: the mono IS the display face. This page is about hashes;
+       its own vernacular is machine output, not a book jacket. ───────────── */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 0 0 14px;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: clamp(30px, 7vw, 52px);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    line-height: 1.05;
+    margin: 0 0 6px;
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--verdigris);
+    margin: 0 0 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--stone-edge);
+  }
+
+  h3 { font-size: 17px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.005em; }
+
+  p { margin: 0 0 16px; }
+
+  .lede { font-size: 20px; line-height: 1.5; color: var(--ink); margin-bottom: 18px; }
+  .muted { color: var(--ink-soft); }
+  .small { font-size: 14.5px; }
+
+  code, .mono { font-family: var(--mono); font-size: 0.92em; }
+
+  /* ── Masthead ──────────────────────────────────────────────────────────── */
+  header.masthead { padding: 74px 0 20px; }
+
+  .lambda {
+    font-family: var(--mono);
+    font-size: 15px;
+    color: var(--bronze);
+    letter-spacing: 0.2em;
+  }
+
+  .tagline {
+    font-family: var(--mono);
+    font-size: clamp(13px, 2.6vw, 15px);
+    letter-spacing: 0.06em;
+    color: var(--ink-soft);
+    margin: 0 0 30px;
+  }
+
+  section { padding: 46px 0; }
+  section + section { border-top: 1px solid var(--stone-edge); }
+
+  /* ── The verification panel — the page's one loud element ──────────────── */
+  .panel {
+    background: var(--stone-deep);
+    border: 1px solid var(--stone-edge);
+    border-left: 3px solid var(--bronze);
+    padding: 24px;
+    margin: 0 0 22px;
+  }
+
+  .panel-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 0 0 10px;
+  }
+
+  .hash {
+    font-family: var(--mono);
+    font-size: clamp(12px, 2.5vw, 15px);
+    line-height: 1.75;
+    word-break: break-all;
+    margin: 0 0 18px;
+  }
+
+  .hash b { font-weight: 400; }
+
+  /* A changed nibble. Colour is doubled by weight + underline so it never
+     carries meaning on its own. */
+  .hash b.diff {
+    color: var(--crest);
+    font-weight: 700;
+    background: var(--bronze-wash);
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+  }
+
+  .verdict {
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.6;
+    padding: 12px 14px;
+    border: 1px solid var(--stone-edge);
+    background: var(--stone);
+  }
+  .verdict.match  { border-left: 3px solid var(--verdigris); }
+  .verdict.differ { border-left: 3px solid var(--crest); }
+  .verdict.error  { border-left: 3px solid var(--crest); background: #f6ecea; }
+  .verdict strong { font-weight: 700; }
+
+  /* ── Order editor ──────────────────────────────────────────────────────── */
+  .fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(238px, 1fr));
+    gap: 12px 20px;
+    margin: 0 0 6px;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 3px; }
+
+  .field label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .field input {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 7px 9px;
+    border: 1px solid var(--stone-edge);
+    background: var(--stone);
+    color: var(--ink);
+    border-radius: 0;
+    width: 100%;
+  }
+
+  .field input:focus-visible { border-color: var(--verdigris); }
+  .field.touched input { border-left: 3px solid var(--bronze); }
+
+  .row-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 18px; }
+
+  button {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 9px 16px;
+    border: 1px solid var(--ink);
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    border-radius: 0;
+  }
+  button:hover { background: var(--ink); color: var(--stone); }
+
+  /* ── Two-column claim tables ───────────────────────────────────────────── */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid var(--stone-edge); }
+  .cols > div { padding: 20px; }
+  .cols > div + div { border-left: 1px solid var(--stone-edge); }
+  .cols h3 { font-family: var(--mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 14px; }
+  .cols .yes h3 { color: var(--verdigris); }
+  .cols .no  h3 { color: var(--ink-soft); }
+  .cols ul { margin: 0; padding-left: 18px; }
+  .cols li { margin-bottom: 11px; font-size: 15.5px; line-height: 1.55; }
+  .cols li:last-child { margin-bottom: 0; }
+
+  /* ── Steps ─────────────────────────────────────────────────────────────── */
+  ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; }
+  ol.steps li {
+    counter-increment: s;
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    gap: 14px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--stone-edge);
+  }
+  ol.steps li:last-child { border-bottom: 0; }
+  ol.steps li::before {
+    content: counter(s);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--bronze);
+    padding-top: 4px;
+    letter-spacing: 0.1em;
+  }
+  ol.steps li.pivot::before { color: var(--crest); font-weight: 700; }
+  ol.steps .what { font-size: 15.5px; }
+  ol.steps .why { font-size: 14px; color: var(--ink-soft); }
+
+  /* ── Status ────────────────────────────────────────────────────────────── */
+  .status { border: 1px solid var(--crest); border-left-width: 3px; padding: 20px; background: var(--stone-deep); }
+  .status h3 { font-family: var(--mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--crest); }
+
+  .counts { font-family: var(--mono); font-size: 13px; color: var(--ink-soft); line-height: 1.9; margin: 14px 0 0; }
+
+  .docs { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1px; background: var(--stone-edge); border: 1px solid var(--stone-edge); }
+  .docs a { display: block; padding: 18px; background: var(--stone); text-decoration: none; color: var(--ink); }
+  .docs a:hover { background: var(--stone-deep); }
+  .docs .n { font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--verdigris); display: block; margin-bottom: 5px; }
+  .docs .d { font-size: 14px; color: var(--ink-soft); }
+
+  footer { padding: 40px 0 70px; font-size: 14px; color: var(--ink-soft); }
+  footer .lam { font-family: var(--mono); color: var(--bronze); letter-spacing: 0.2em; }
+
+  @media (max-width: 640px) {
+    .cols { grid-template-columns: 1fr; }
+    .cols > div + div { border-left: 0; border-top: 1px solid var(--stone-edge); }
+    section { padding: 36px 0; }
+    header.masthead { padding-top: 48px; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .hash b.flash { animation: flash 620ms ease-out; }
+    @keyframes flash {
+      from { background: var(--bronze); color: var(--stone); }
+      to   { background: var(--bronze-wash); }
+    }
+  }
+
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+  }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="lambda">Λ</div>
+    <h1>Spartan1</h1>
+    <p class="tagline">Exact-settlement RFQ primitive on Permit2 · one contract · one function · zero trust added</p>
+    <p class="lede prose">
+      A maker signs an order with exact amounts on both legs. It settles exactly as signed,
+      or the whole transaction reverts. There is no partial fill, no slippage tolerance,
+      no protocol custody, no upgrade path, and no stored state.
+    </p>
+    <p class="prose muted small">
+      The name is the argument: every feature that is not essential to exact settlement has been
+      removed on purpose, and the ones that were cut are named rather than quietly missing.
+    </p>
+  </header>
+
+  <!-- ══ HERO: the page verifies itself ═══════════════════════════════════ -->
+  <section aria-labelledby="verify-h">
+    <h2 id="verify-h">Don't take the claim — check it</h2>
+
+    <p class="prose">
+      Every field of the order is folded into one hash, and that hash is what the maker signs
+      through Permit2. Change any single field and the signature stops verifying — not partially,
+      not approximately. Below, this page computes that hash in your browser and compares it to
+      the value frozen in the repository.
+    </p>
+
+    <div class="panel">
+      <p class="panel-label">Permit2 signing digest — computed here, now</p>
+      <p class="hash" id="digest" aria-live="polite" aria-atomic="true">
+        <span class="muted">computing…</span>
+      </p>
+      <div class="verdict" id="verdict" role="status">Loading the type string from the repository…</div>
+    </div>
+
+    <p class="prose small muted">
+      The same value is produced independently by the Python client, an <code>eth-account</code>
+      oracle, the Foundry suite, and the TypeScript SDK. If the four ever disagreed, the build
+      would fail before anything reached a chain. Your browser is the fifth.
+    </p>
+  </section>
+
+  <!-- ══ PLAYGROUND ═══════════════════════════════════════════════════════ -->
+  <section aria-labelledby="order-h">
+    <h2 id="order-h">The order — ten fields, all binding</h2>
+
+    <p class="prose">
+      Edit anything. The counter tells you how much of the digest moved.
+    </p>
+
+    <form id="order-form" novalidate>
+      <div class="fields" id="fields"></div>
+      <div class="row-actions">
+        <button type="button" id="reset">Restore the frozen order</button>
+        <span class="small muted" id="touched-note"></span>
+      </div>
+    </form>
+
+    <p class="small muted" style="margin-top:22px">
+      Nothing here is sent anywhere, and no wallet is involved. It is arithmetic on the numbers
+      in the boxes.
+    </p>
+  </section>
+
+  <!-- ══ WHAT IT TRADES ═══════════════════════════════════════════════════ -->
+  <section aria-labelledby="trade-h">
+    <h2 id="trade-h">What it buys, and what it costs</h2>
+
+    <div class="cols">
+      <div class="yes">
+        <h3>Tighter on</h3>
+        <ul>
+          <li><strong>Atomic exactness.</strong> Both legs move the signed amounts, checked on-chain after the transfers, or the transaction reverts whole.</li>
+          <li><strong>Blast radius.</strong> Makers authorise one order at a time through Permit2. Spartan1 itself holds no standing allowance and no funds.</li>
+          <li><strong>Surface.</strong> One file, one function, one library, one trust anchor. No owner, no proxy, no governance, no storage.</li>
+        </ul>
+      </div>
+      <div class="no">
+        <h3>Deliberately not</h3>
+        <ul>
+          <li><strong>Liquidity or routing.</strong> No oracle, no price discovery, no fair-value logic. It settles a quote someone else priced.</li>
+          <li><strong>An aggregator.</strong> It is a primitive meant to sit behind wallets and frontends that already exist.</li>
+          <li><strong>An everything-store.</strong> Batch settlement and cross-order matching are out of scope permanently, by decision rather than by backlog.</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="prose small muted" style="margin-top:20px">
+      If you need deep liquidity and smart routing, use an aggregator. If you need a firm quote that
+      executes exactly as signed or not at all, that is this.
+    </p>
+  </section>
+
+  <!-- ══ LIFECYCLE ════════════════════════════════════════════════════════ -->
+  <section aria-labelledby="settle-h">
+    <h2 id="settle-h">One transaction, seven steps</h2>
+
+    <ol class="steps">
+      <li><span><span class="what">Static checks.</span> <span class="why">Window inside the deadline, two different tokens, non-zero amount, real recipient.</span></span></li>
+      <li><span><span class="what">Derive the counterparty.</span> <span class="why">An open order settles for whoever sent the transaction. It is never a free parameter.</span></span></li>
+      <li><span><span class="what">Read the window.</span> <span class="why">Before it opens only the maker can settle. After, anyone can, and the tip is released.</span></span></li>
+      <li><span><span class="what">Snapshot balances.</span> <span class="why">Both receiving sides, before anything moves.</span></span></li>
+      <li><span><span class="what">Pull from the maker first.</span> <span class="why">Permit2 checks the deadline, the amount, the nonce and the signature before a single token of the caller's moves. An expired order costs nothing.</span></span></li>
+      <li><span><span class="what">Pay out.</span> <span class="why">The exact signed amount to the counterparty; any surplus is the executor's tip.</span></span></li>
+      <li class="pivot"><span><span class="what">Prove both deltas, or revert.</span> <span class="why">Each side must have received exactly what was signed. A fee-on-transfer token, a phantom token, a rounding surprise — all of them land here and reverse the whole transaction. This is where the guarantee actually lives.</span></span></li>
+    </ol>
+  </section>
+
+  <!-- ══ STATUS ═══════════════════════════════════════════════════════════ -->
+  <section aria-labelledby="status-h">
+    <h2 id="status-h">Where it actually is</h2>
+
+    <div class="status">
+      <h3>Not deployed · not audited · no capital</h3>
+      <p style="margin-bottom:0">
+        The contract and the off-chain layer are built and gated. Settlement against the real
+        Permit2 on a live chain is still an open test, and the settlement address in the signing
+        vector is still a placeholder that has to be re-frozen on deploy. No amount of passing
+        tests replaces an independent audit, and the test gate is a precondition for one rather
+        than a substitute.
+      </p>
+      <p class="counts">
+        contract 21 passed · 1 declared skip (the open on-chain gate)<br/>
+        relay 105 · maker 63 · executor 26 · SDK 27 · signing harness green<br/>
+        frozen literals policed across every implementation
+      </p>
+    </div>
+
+    <p class="prose small muted" style="margin-top:20px">
+      The remaining risk is not mainly technical. A settlement venue needs a maker quoting and a
+      taker arriving at the same moment, and that is harder to arrange than it is to build.
+    </p>
+  </section>
+
+  <!-- ══ DOCS ═════════════════════════════════════════════════════════════ -->
+  <section aria-labelledby="docs-h">
+    <h2 id="docs-h">Read further</h2>
+    <nav class="docs" aria-label="Documentation">
+      <a href="SPEC.md"><span class="n">Spec</span><span class="d">The order, the lifecycle, the invariants, what is out of scope</span></a>
+      <a href="THREAT_MODEL.md"><span class="n">Threat model</span><span class="d">Each attack, and what structurally prevents it</span></a>
+      <a href="ARCHITECTURE.md"><span class="n">Architecture</span><span class="d">Relays, makers, executors, and the tests that gate them</span></a>
+      <a href="https://github.com/arabafenice599rae/Spartan1"><span class="n">Source</span><span class="d">The contract, the suites, and every gate you can run yourself</span></a>
+    </nav>
+  </section>
+
+  <footer>
+    <p><span class="lam">Λ</span> &nbsp; MIT licensed. No analytics, no trackers, no external fonts. This page never asks for a key.</p>
+  </footer>
+
+</div>
+
+<script type="module">
+  const $ = (id) => document.getElementById(id);
+  const digestEl  = $("digest");
+  const verdictEl = $("verdict");
+
+  // The frozen vector. These are the exact values the repository's four
+  // implementations agree on — see SPEC.md.
+  const EXPECT_DIGEST =
+    "0xbbb89e334fb04f3e32eecb7e77b2a812437ad7dcdaa0101fa3334f1d91daa63b";
+  const CHAIN_ID = 8453;
+  const SPENDER  = "0x1111111111111111111111111111111111111111";
+  const NONCE    = 777n;
+
+  const FROZEN = {
+    maker:      "0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7",
+    taker:      "0x0000000000000000000000000000000000000000",
+    sellToken:  "0x2222222222222222222222222222222222222222",
+    buyToken:   "0x3333333333333333333333333333333333333333",
+    sellAmount: "1000000000000000000",
+    buyAmount:  "3000000000",
+    recipient:  "0x4444444444444444444444444444444444444444",
+    maxTip:     "10000000000000000",
+    fillWindow: "1900000000",
+    deadline:   "1900000045",
+  };
+
+  const HINT = {
+    maker:      "who signs, and whose tokens move",
+    taker:      "zero means anyone may settle it",
+    sellToken:  "what the maker gives",
+    buyToken:   "what the maker receives",
+    sellAmount: "exact, smallest unit",
+    buyAmount:  "exact, smallest unit",
+    recipient:  "where the maker's side lands",
+    maxTip:     "ceiling on the executor's fee",
+    fillWindow: "when anyone may settle",
+    deadline:   "valid up to and including this second",
+  };
+
+  function fail(message, detail) {
+    verdictEl.className = "verdict error";
+    verdictEl.innerHTML =
+      `<strong>Can't compute here.</strong> ${message}` +
+      (detail ? `<br/><span class="muted">${detail}</span>` : "");
+    digestEl.innerHTML = `<span class="muted">—</span>`;
+  }
+
+  let viem, ORDER_TYPE, ORDER_TYPEHASH, PERMIT2, fields, current, previous = null;
+
+  try {
+    // Single source of truth: the type string is generated from client/order.py.
+    // It is never retyped in this page.
+    const C = await import("./sdk/src/generated/constants.js");
+    ORDER_TYPE     = C.ORDER_TYPE;
+    ORDER_TYPEHASH = C.ORDER_TYPEHASH;
+    PERMIT2        = C.PERMIT2;
+  } catch {
+    fail(
+      "This page reads the order type string from <code>sdk/src/generated/constants.js</code> rather than keeping its own copy.",
+      "Serve it from the repository root so that path resolves."
+    );
+  }
+
+  if (ORDER_TYPE) {
+    try {
+      viem = await import("https://esm.sh/viem@2.55.8");
+    } catch {
+      fail("The hashing library did not load.", "Check the network, then reload.");
+    }
+  }
+
+  if (ORDER_TYPE && viem) {
+    // Derive the EIP-712 field list from the generated type string — so the
+    // editor below can never drift from what the contract actually hashes.
+    fields = ORDER_TYPE
+      .slice(ORDER_TYPE.indexOf("(") + 1, ORDER_TYPE.lastIndexOf(")"))
+      .split(",")
+      .map((seg) => {
+        const [type, name] = seg.trim().split(/\s+/);
+        return { type, name };
+      });
+
+    buildEditor();
+    current = { ...FROZEN };
+    render();
+  }
+
+  function buildEditor() {
+    const host = $("fields");
+    host.innerHTML = "";
+    for (const { name, type } of fields) {
+      const wrap = document.createElement("div");
+      wrap.className = "field";
+      wrap.dataset.name = name;
+
+      const label = document.createElement("label");
+      label.setAttribute("for", `f-${name}`);
+      label.textContent = name;
+
+      const input = document.createElement("input");
+      input.id = `f-${name}`;
+      input.value = FROZEN[name];
+      input.spellcheck = false;
+      input.autocomplete = "off";
+      input.setAttribute("aria-describedby", `h-${name}`);
+      input.addEventListener("input", () => {
+        current[name] = input.value.trim();
+        render();
+      });
+
+      const hint = document.createElement("span");
+      hint.id = `h-${name}`;
+      hint.className = "visually-hidden";
+      hint.textContent = `${HINT[name]}. Type ${type}.`;
+
+      wrap.append(label, input, hint);
+      host.append(wrap);
+    }
+  }
+
+  function digestOf(order) {
+    const permitted = BigInt(order.sellAmount) + BigInt(order.maxTip);
+    const witness = {};
+    for (const { name, type } of fields) {
+      witness[name] = type === "uint256" ? BigInt(order[name]) : order[name];
+    }
+    return viem.hashTypedData({
+      domain: { name: "Permit2", chainId: CHAIN_ID, verifyingContract: PERMIT2 },
+      types: {
+        PermitWitnessTransferFrom: [
+          { name: "permitted", type: "TokenPermissions" },
+          { name: "spender",   type: "address" },
+          { name: "nonce",     type: "uint256" },
+          { name: "deadline",  type: "uint256" },
+          { name: "witness",   type: "Order" },
+        ],
+        TokenPermissions: [
+          { name: "token",  type: "address" },
+          { name: "amount", type: "uint256" },
+        ],
+        Order: fields,
+      },
+      primaryType: "PermitWitnessTransferFrom",
+      message: {
+        permitted: { token: order.sellToken, amount: permitted },
+        spender: SPENDER,
+        nonce: NONCE,
+        deadline: BigInt(order.deadline),
+        witness,
+      },
+    });
+  }
+
+  function render() {
+    let digest;
+    try {
+      digest = digestOf(current);
+    } catch {
+      verdictEl.className = "verdict error";
+      verdictEl.innerHTML =
+        `<strong>That value doesn't fit the field.</strong> Addresses are 40 hex characters after <code>0x</code>; amounts are whole numbers in the token's smallest unit.`;
+      return;
+    }
+
+    // Character-level comparison against the frozen digest — the avalanche is
+    // the whole point, so it is shown rather than described.
+    const a = digest.slice(2), b = EXPECT_DIGEST.slice(2);
+    let changed = 0;
+    const out = ["<b>0x</b>"];
+    for (let i = 0; i < a.length; i++) {
+      const diff = a[i] !== b[i];
+      if (diff) changed++;
+      const flash = diff && previous && previous[i + 2] !== digest[i + 2] ? " flash" : "";
+      out.push(diff ? `<b class="diff${flash}">${a[i]}</b>` : `<b>${a[i]}</b>`);
+    }
+    digestEl.innerHTML = out.join("");
+    previous = digest;
+
+    const touched = fields.filter(({ name }) => current[name] !== FROZEN[name]);
+    for (const { name } of fields) {
+      document
+        .querySelector(`.field[data-name="${name}"]`)
+        .classList.toggle("touched", current[name] !== FROZEN[name]);
+    }
+
+    if (changed === 0) {
+      verdictEl.className = "verdict match";
+      verdictEl.innerHTML =
+        `<strong>Matches the frozen digest.</strong> Your browser reproduced, character for character, ` +
+        `the value that the Python client, the <code>eth-account</code> oracle, the Foundry suite and the TypeScript SDK all produce.`;
+    } else {
+      const names = touched.map((f) => f.name);
+      const list =
+        names.length === 1
+          ? `<code>${names[0]}</code>`
+          : names.length === 2
+          ? `<code>${names[0]}</code> and <code>${names[1]}</code>`
+          : `${names.length} fields`;
+      verdictEl.className = "verdict differ";
+      verdictEl.innerHTML =
+        `<strong>${changed} of 64 characters differ.</strong> You changed ${list}. ` +
+        `A signature over the frozen order will not verify against this one — the maker's ` +
+        `earlier commitment says nothing about it.`;
+    }
+
+    $("touched-note").textContent =
+      touched.length === 0 ? "" : `${touched.length} field${touched.length > 1 ? "s" : ""} edited`;
+  }
+
+  $("reset").addEventListener("click", () => {
+    current = { ...FROZEN };
+    for (const { name } of fields) $(`f-${name}`).value = FROZEN[name];
+    render();
+  });
+</script>
+</body>
+</html>
