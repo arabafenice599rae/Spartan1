@@ -52,12 +52,12 @@ SPEC: list[tuple[str, str, str]] = [
     ("witness", "test/Spartan1.t.sol",        r"EXPECT_WITNESS\s*=\s*" + HEX64),
     ("witness", "client/test_spartan1.py",    r'EXPECT_WITNESS\s*=\s*"' + HEX64 + r'"'),
     ("witness", "sdk/test/sdk.test.ts",       r'const EXPECT_WITNESS\s*=\s*"' + HEX64 + r'"'),
-    ("witness", "README.md",                  r"witness \(keccak256\(abi\.encode\(ORDER_TYPEHASH, order\)\)\):\s*\n\s*" + HEX64),
+    ("witness", "SPEC.md",                    r"witness \(keccak256\(abi\.encode\(ORDER_TYPEHASH, order\)\)\):\s*\n\s*" + HEX64),
     # digest
     ("digest", "test/Spartan1.t.sol",         r"EXPECT_DIGEST\s*=\s*" + HEX64),
     ("digest", "client/test_spartan1.py",     r'EXPECT_DIGEST\s*=\s*"' + HEX64 + r'"'),
     ("digest", "sdk/test/sdk.test.ts",        r'const EXPECT_DIGEST\s*=\s*"' + HEX64 + r'"'),
-    ("digest", "README.md",                   r"digest  \(EIP-712 PermitWitnessTransferFrom signing hash\):\s*\n\s*" + HEX64),
+    ("digest", "SPEC.md",                     r"digest  \(EIP-712 PermitWitnessTransferFrom signing hash\):\s*\n\s*" + HEX64),
     # vector spender (moves on re-freeze)
     ("vector_spender", "test/Spartan1.t.sol",     r"VEC_SPENDER\s*=\s*" + ADDR),
     ("vector_spender", "client/test_spartan1.py", r'\nSPENDER\s*=\s*"' + ADDR + r'"'),
@@ -75,6 +75,16 @@ SPEC: list[tuple[str, str, str]] = [
     ("sentinel", "sdk/src/generated/constants.ts", r'PLACEHOLDER_SPENDER\s*=\s*"' + ADDR + r'"'),
     ("sentinel", "sdk/src/generated/constants.js", r'PLACEHOLDER_SPENDER\s*=\s*"' + ADDR + r'"'),
 ]
+
+# DECLARED leg counts. Every other failure mode in this gate is already loud — a moved or reformatted
+# anchor matches 0 times, a duplicated one matches 2, a renamed file is unreadable, and all three end
+# in `problems` -> exit 1. Exactly ONE hole was silent: DELETING a SPEC entry. The OK line prints
+# len(found[kind]), so a dropped leg simply printed "3 legs" and still exited 0 — coverage quietly
+# shrinking while the badge stayed green, which is the failure class this whole gate exists to
+# prevent. These numbers are deliberately hardcoded rather than derived from SPEC (deriving them
+# would move in lockstep and assert nothing): removing a leg now REQUIRES editing this table, which
+# is a visible, reviewable act rather than a silent deletion.
+EXPECTED_LEGS = {"witness": 4, "digest": 4, "vector_spender": 5, "sentinel": 5}
 
 
 def extract() -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
@@ -133,6 +143,18 @@ def _check_deployments(spender: str | None, problems: list[str]) -> str:
 
 def main() -> int:
     found, problems = extract()
+
+    # 0. Coverage did not shrink. Checked against the SPEC table itself (catches a deleted entry even
+    #    when the remaining legs all agree) AND against what was actually extracted.
+    for kind, expected in EXPECTED_LEGS.items():
+        declared = sum(1 for k, _rel, _pat in SPEC if k == kind)
+        if declared != expected:
+            problems.append(
+                f"{kind}: SPEC declares {declared} legs, EXPECTED_LEGS says {expected} — a leg was "
+                f"added or removed. If deliberate, update EXPECTED_LEGS in the same commit; a gate "
+                f"that quietly polices fewer legs is the failure this check exists to prevent.")
+    for kind in set(EXPECTED_LEGS) - set(found):
+        problems.append(f"{kind}: no legs extracted at all (expected {EXPECTED_LEGS[kind]})")
 
     def uniform(kind: str, label: str) -> str | None:
         legs = found.get(kind, [])
