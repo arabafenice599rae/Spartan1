@@ -93,6 +93,7 @@ Foundry fetches solc `0.8.24` automatically. The suite deploys the **real** Perm
 
 ```text
 spartan1/
+├── index.html             # project landing page — recomputes the frozen digest in your browser
 ├── src/Spartan1.sol       # the contract (~80–100 lines)
 ├── test/Spartan1.t.sol    # Foundry: gate tests (2/3/5 first), fuzz, invariants, fork
 ├── client/                # order.py — THE single source of truth — + the triple-digest harness
